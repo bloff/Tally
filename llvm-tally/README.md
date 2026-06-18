@@ -25,3 +25,13 @@ llvm-tally/scripts/build-rust-workload.sh examples/random-walk /tmp/tally-llvm-b
 ```
 
 The demo prints CSV rows with one row per minithread.
+
+## Run The Self-Contained Walk Benchmark
+
+```sh
+llvm-tally/scripts/build-rust-workload.sh examples/self-walk /tmp/tally-llvm-build /tmp/tally-llvm-build/llvm-tally-pass.so
+/tmp/tally-llvm-build/bin/llvm-tally-self-walk llvm-tally/dl/examples/self-walk/self_walk.so
+```
+
+This variant keeps the graph algorithm inside the instrumented Rust workload so
+it can be compared more directly with `gcc-tally/bin/self_walk`.

@@ -16,6 +16,12 @@ Rust runtime, without changing rustc itself.
   calls host graph functions and runs forever.
 - `examples/random-walk/host/`: Rust host executable that loads the instrumented
   workload and runs ten minithreads with linearly increasing budgets.
+- `examples/self-walk/workload/`: controlled `#![no_std]` Rust workload that
+  performs the same synthetic graph walk as the GCC `self_walk` benchmark
+  without host graph calls.
+- `examples/self-walk/host/`: Rust host executable for the self-contained
+  benchmark; it reports the workload-owned vertex counters after fixed
+  scheduler metacycles.
 - `scripts/`: rustc/opt/clang pipeline for turning workload Rust into an
   instrumented shared object.
 - `tests/`: pass fixtures and integration scripts.
@@ -32,6 +38,15 @@ effective budget.
 Unlike `gcc-tally`, this prototype does not reserve `r15`. That keeps the Rust
 path independent from rustc backend changes, but it means the budget check is
 more expensive than the original register-based GCC instrumentation.
+
+## Performance Comparison Workload
+
+The repository-level comparison uses `examples/self-walk`, not the graph ABI
+demo. Both the C and Rust workloads use the same linear-congruential random
+number generator, the same four synthetic neighbor offsets, and the same
+per-iteration state updates. That keeps graph work inside instrumented code in
+both languages, while still allowing each implementation to use its own budget
+storage strategy.
 
 ## Limitations
 

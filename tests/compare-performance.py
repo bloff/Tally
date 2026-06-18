@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare GCC Tally and LLVM/Rust Tally random-walk throughput."""
+"""Compare GCC/C and LLVM/Rust Tally self-contained random-walk throughput."""
 
 import argparse
 import csv
@@ -13,7 +13,7 @@ from pathlib import Path
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Time comparable GCC/C and LLVM/Rust Tally random-walk runs."
+        description="Time comparable self-contained GCC/C and LLVM/Rust Tally random-walk runs."
     )
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--build-root", type=Path, required=True)
@@ -75,7 +75,7 @@ def parse_rows(output):
 def build_llvm_workload(repo_root, build_root, llvm_pass):
     script = repo_root / "llvm-tally" / "scripts" / "build-rust-workload.sh"
     completed = subprocess.run(
-        [str(script), "examples/random-walk", str(build_root / "llvm-tally"), str(llvm_pass)],
+        [str(script), "examples/self-walk", str(build_root / "llvm-tally"), str(llvm_pass)],
         cwd=repo_root,
         check=True,
         text=True,
@@ -116,7 +116,6 @@ def measure_llvm(args, workload_so):
     command = [
         str(args.llvm_host),
         str(workload_so),
-        str(args.repo_root / "gcc-tally" / "data" / "graph.txt"),
         str(args.metacycles),
         str(args.base_budget),
         str(args.budget_step),

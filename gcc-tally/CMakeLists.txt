@@ -71,6 +71,14 @@ target_include_directories(budget_walk PRIVATE "${TALLY_INCLUDE_DIR}")
 target_compile_definitions(budget_walk PRIVATE TALLY_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(budget_walk minithread dl Threads::Threads)
 
+add_executable(self_walk experiments/self_walk/self_walk.c)
+set_target_properties(self_walk PROPERTIES COMPILE_FLAGS "-ldl -rdynamic -g -lpthread -no-pie -fno-pie -fPIC -save-temps")
+set_target_properties(self_walk PROPERTIES LINK_FLAGS "-Wl,-R -Wl,. -ldl -Wl,--export-dynamic")
+add_dependencies(self_walk gcc-tally)
+target_include_directories(self_walk PRIVATE "${TALLY_INCLUDE_DIR}")
+target_compile_definitions(self_walk PRIVATE TALLY_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(self_walk minithread dl Threads::Threads)
+
 enable_testing()
 
 add_executable(test_hash tests/test_hash.c)
@@ -89,3 +97,6 @@ set_tests_properties(demo_runs PROPERTIES TIMEOUT 20)
 
 add_test(NAME budget_walk_runs COMMAND budget_walk 100 100 100)
 set_tests_properties(budget_walk_runs PROPERTIES TIMEOUT 20)
+
+add_test(NAME self_walk_runs COMMAND self_walk 100 100 100)
+set_tests_properties(self_walk_runs PROPERTIES TIMEOUT 20)

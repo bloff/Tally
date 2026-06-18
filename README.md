@@ -38,9 +38,12 @@ The Rust workload pipeline can also be run manually:
 ```sh
 llvm-tally/scripts/build-rust-workload.sh examples/random-walk /tmp/tally-llvm-build /tmp/tally-llvm-build/llvm-tally-pass.so
 /tmp/tally-llvm-build/bin/llvm-tally-random-walk
+
+llvm-tally/scripts/build-rust-workload.sh examples/self-walk /tmp/tally-llvm-build /tmp/tally-llvm-build/llvm-tally-pass.so
+/tmp/tally-llvm-build/bin/llvm-tally-self-walk llvm-tally/dl/examples/self-walk/self_walk.so
 ```
 
-## Compare GCC/C And LLVM/Rust Runtime Throughput
+## Compare GCC/C And LLVM/Rust Self-Contained Runtime Throughput
 
 After building the root project, run:
 
@@ -48,11 +51,15 @@ After building the root project, run:
 python3 tests/compare-performance.py \
   --repo-root . \
   --build-root /tmp/tally-all-build \
-  --gcc-binary gcc-tally/bin/budget_walk \
-  --llvm-host /tmp/tally-all-build/llvm-tally/bin/llvm-tally-random-walk \
+  --gcc-binary gcc-tally/bin/self_walk \
+  --llvm-host /tmp/tally-all-build/llvm-tally/bin/llvm-tally-self-walk \
   --llvm-pass /tmp/tally-all-build/llvm-tally/llvm-tally-pass.so
 ```
 
-This compares runtime throughput for the C/GCC and Rust/LLVM random-walk
-experiments. It reports timing and vertices/second, but does not assert a winner
-because benchmark results are machine- and load-sensitive.
+This compares runtime throughput for C/GCC and Rust/LLVM workloads that run the
+same synthetic degree-4 random walk. Graph generation and vertex counting happen
+inside the instrumented code in both languages; there are no host graph calls in
+the measured loop. The runtimes still use their native accounting strategies:
+GCC keeps its reserved-register budget and LLVM/Rust keeps its memory-backed
+budget. The script reports timing and vertices/second, but does not assert a
+winner because benchmark results are machine- and load-sensitive.

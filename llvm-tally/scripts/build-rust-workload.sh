@@ -16,6 +16,8 @@ PASS_PLUGIN="${3:-${BUILD_DIR}/llvm-tally-pass.so}"
 SOURCE_FILE="${LLVM_TALLY_DIR}/${WORKLOAD_REL}/workload/src/lib.rs"
 WORK_DIR="${BUILD_DIR}/workloads/${WORKLOAD_REL}"
 OUTPUT_DIR="${LLVM_TALLY_DIR}/dl/${WORKLOAD_REL}"
+WORKLOAD_NAME="$(basename "${WORKLOAD_REL}")"
+CRATE_NAME="${WORKLOAD_NAME//-/_}"
 
 if ! [ -f "${SOURCE_FILE}" ]; then
     echo "missing workload source: ${SOURCE_FILE}" >&2
@@ -29,12 +31,12 @@ fi
 
 mkdir -p "${WORK_DIR}" "${OUTPUT_DIR}"
 
-RAW_BC="${WORK_DIR}/random_walk.bc"
-INSTRUMENTED_BC="${WORK_DIR}/random_walk.instrumented.bc"
-OUTPUT_SO="${OUTPUT_DIR}/random_walk.so"
+RAW_BC="${WORK_DIR}/${CRATE_NAME}.bc"
+INSTRUMENTED_BC="${WORK_DIR}/${CRATE_NAME}.instrumented.bc"
+OUTPUT_SO="${OUTPUT_DIR}/${CRATE_NAME}.so"
 
 rustc "${SOURCE_FILE}" \
-    --crate-name random_walk_budget \
+    --crate-name "${CRATE_NAME}" \
     --crate-type lib \
     --target x86_64-unknown-linux-gnu \
     --emit=llvm-bc \

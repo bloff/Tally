@@ -19,6 +19,9 @@ set(LLVM_TALLY_CARGO_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/cargo")
 set(LLVM_TALLY_HOST_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/examples/random-walk/host/Cargo.toml")
 set(LLVM_TALLY_HOST_BINARY "${LLVM_TALLY_CARGO_TARGET_DIR}/release/llvm-tally-random-walk")
 set(LLVM_TALLY_HOST_OUTPUT "${LLVM_TALLY_BIN_DIR}/llvm-tally-random-walk")
+set(LLVM_TALLY_SELF_HOST_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/examples/self-walk/host/Cargo.toml")
+set(LLVM_TALLY_SELF_HOST_BINARY "${LLVM_TALLY_CARGO_TARGET_DIR}/release/llvm-tally-self-walk")
+set(LLVM_TALLY_SELF_HOST_OUTPUT "${LLVM_TALLY_BIN_DIR}/llvm-tally-self-walk")
 
 add_custom_command(
     OUTPUT "${LLVM_TALLY_HOST_OUTPUT}"
@@ -37,6 +40,25 @@ add_custom_command(
 
 add_custom_target(llvm-tally-random-walk-host ALL
     DEPENDS "${LLVM_TALLY_HOST_OUTPUT}"
+)
+
+add_custom_command(
+    OUTPUT "${LLVM_TALLY_SELF_HOST_OUTPUT}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${LLVM_TALLY_BIN_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E env
+            CARGO_TARGET_DIR="${LLVM_TALLY_CARGO_TARGET_DIR}"
+            cargo build --release --manifest-path "${LLVM_TALLY_SELF_HOST_MANIFEST}"
+    COMMAND "${CMAKE_COMMAND}" -E copy "${LLVM_TALLY_SELF_HOST_BINARY}" "${LLVM_TALLY_SELF_HOST_OUTPUT}"
+    DEPENDS
+        "${LLVM_TALLY_SELF_HOST_MANIFEST}"
+        examples/self-walk/host/build.rs
+        examples/self-walk/host/src/main.rs
+        runtime/Cargo.toml
+        runtime/src/lib.rs
+)
+
+add_custom_target(llvm-tally-self-walk-host ALL
+    DEPENDS "${LLVM_TALLY_SELF_HOST_OUTPUT}"
 )
 
 enable_testing()
@@ -64,6 +86,15 @@ add_test(
             "${LLVM_TALLY_HOST_OUTPUT}"
 )
 
-set_tests_properties(llvm_runtime_tests llvm_pass_basic llvm_random_walk_integration
+add_test(
+    NAME llvm_self_walk_integration
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/run-self-walk-integration.sh"
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+            "${CMAKE_CURRENT_BINARY_DIR}"
+            "$<TARGET_FILE:llvm-tally-pass>"
+            "${LLVM_TALLY_SELF_HOST_OUTPUT}"
+)
+
+set_tests_properties(llvm_runtime_tests llvm_pass_basic llvm_random_walk_integration llvm_self_walk_integration
     PROPERTIES TIMEOUT 30
 )

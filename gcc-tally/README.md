@@ -49,3 +49,13 @@ python3 scripts/plot_budget_walk_scaling.py
 
 The plotting script runs the experiment, writes CSV data, and saves a PNG graph
 under `results/`.
+
+## Run The Self-Contained Walk Benchmark
+
+```sh
+./bin/self_walk
+```
+
+This benchmark uses an instrumented C workload that generates a synthetic graph
+arithmetically inside the measured loop. It is the GCC half of the repository's
+direct comparison with `llvm-tally/bin/llvm-tally-self-walk`.

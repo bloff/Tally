@@ -13,8 +13,8 @@ The repository is now organized around a clear split:
 - `include/` contains the headers used by the runtime, plugin, modules, and
   instrumented code.
 - `examples/` contains programs and instrumented workloads that use Tally.
-- `experiments/` contains measurement code, including the budget linearity
-  random-walk experiment.
+- `experiments/` contains measurement code, including the graph-backed budget
+  linearity experiment and the self-contained comparison benchmark.
 - `tests/` contains CTest-backed checks and additional compiler/runtime probes.
 - `data/` contains runtime input data such as the graph fixture.
 - `scripts/` contains helper scripts for dynamic instrumentation and plotting.
@@ -34,7 +34,9 @@ The core idea is:
 The main executable demonstrates the mechanism with a graph random-walk
 workload. The `budget_walk` experiment runs ten minithreads over the same graph
 with linearly increasing per-cycle budgets, reports completed graph hops, and can
-be plotted by `scripts/plot_budget_walk_scaling.py`.
+be plotted by `scripts/plot_budget_walk_scaling.py`. The `self_walk` experiment
+uses an arithmetic synthetic graph inside the instrumented workload so it can be
+compared directly with the LLVM/Rust prototype without host graph calls.
 
 ## Detailed Description
 
@@ -89,7 +91,7 @@ folders.
   `minithread_struct.h`, `cycles_probe.h`, `flags.h`, `modules.h`.
 - Graph module headers: `graph.h`, `graph_api.h`, `graph_func.h`.
 - Allocator module headers: `shmall.h`, `shmall_api.h`, `llist.h`.
-- Experiment header: `random_walk_budget.h`.
+- Experiment headers: `random_walk_budget.h`, `self_walk.h`.
 
 #### Code That Uses Tally
 
@@ -117,6 +119,15 @@ folders.
   experiment. It increments the graph module hop counter on each transition.
 - `scripts/plot_budget_walk_scaling.py`: runs `budget_walk`, writes CSV output,
   and produces the PNG plot.
+
+`experiments/self_walk/`
+
+- `self_walk.c`: host program for the direct GCC/C versus LLVM/Rust comparison.
+  It runs ten minithreads with linearly increasing budgets and reads vertex
+  counts from the workload argument block.
+- `instrumented/self_walk.c`: instrumented synthetic random-walk body. It uses
+  the same linear-congruential generator, neighbor offsets, and state updates as
+  `llvm-tally/examples/self-walk/workload/src/lib.rs`.
 
 `tests/`
 
@@ -264,6 +275,7 @@ CTest currently covers:
 - `demo_runs`: runs the main minithread demo, including dynamic compilation of
   `examples/instrumented/random_walk.c`.
 - `budget_walk_runs`: runs a short budget-walk smoke test.
+- `self_walk_runs`: runs a short self-contained comparison-workload smoke test.
 
 The budget-walk experiment can also be run through the plotting script:
 
