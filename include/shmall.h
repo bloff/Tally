@@ -41,15 +41,15 @@ typedef struct {
 
 typedef struct heap_t_{
     struct gcctally_module_wrapper module;
-    long start;
-    long end;
+    char *start;
+    char *end;
     bin_t *bins[BIN_COUNT];
 } heap_t;
 
 static uint overhead = sizeof(footer_t) + sizeof(node_t);
 
-void *heap_alloc(heap_t *heap, size_t size);
-void heap_free(heap_t *heap, void *p);
+void *_heap_alloc(heap_t *heap, size_t size);
+void _heap_free(heap_t *heap, void *p);
 uint expand(heap_t *heap, size_t sz);
 void contract(heap_t *heap, size_t sz);
 

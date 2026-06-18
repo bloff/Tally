@@ -13,6 +13,7 @@ struct graph_struct{
 	int hops;
 };
 
+void init_graph(void*, void*);
 void load_graph(char*);
 
 #endif //GRAPH_

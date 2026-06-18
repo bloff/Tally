@@ -16,16 +16,18 @@ int c(){
 }
 
 void t(void* args){
-    int x = (int) args;
+    int x = (int)(intptr_t) args;
     int sum = 0;
 
     switch (x)
     {
     case 1:
         sum = a();        
+        /* fall through */
 
     case 2:
         sum = b();
+        /* fall through */
 
     case 3:
         sum = c();

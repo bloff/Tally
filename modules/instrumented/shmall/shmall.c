@@ -10,5 +10,5 @@ void* shmall_alloc(uint32_t size){
 }
 
 void shmall_free(void* p){
-    return _heap_free(minithread_find(SHMALL_HASH), p);
+    _heap_free(minithread_find(SHMALL_HASH), p);
 }

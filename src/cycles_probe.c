@@ -6,7 +6,7 @@
 MinithreadInfo minithread_info_init(Minithread thread, MinithreadInfo t_info){
     MinithreadInfo ret;
     if(t_info == NULL){
-        ret = (MinithreadInfo) malloc(sizeof (struct stMinithread));
+        ret = (MinithreadInfo) malloc(sizeof (struct stMinithreadInfo));
     }else{
         ret = t_info;
     }
@@ -27,6 +27,7 @@ int findTrueWork(Minithread thread){
 int addTrueWork(Minithread thread, MinithreadInfo t_info){
     int work = findTrueWork(thread);
     t_info->trueCycleSum += work;
+    return work;
 }
 
 void initCycleHistory(MinithreadInfo t_info, int history_size){

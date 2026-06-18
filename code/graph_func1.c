@@ -46,6 +46,6 @@ void run_dfs(void* args){
 
     printf("calling dfs\n");
 
-    dfs(start, dest, &visited);
+    dfs(start, dest, visited);
     return; 
 }

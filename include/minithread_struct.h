@@ -43,12 +43,13 @@ struct stMinithread {
     MinithreadCode body;
 
     //amount of cycles needed to run, this number does not change during execution of the thread
-    uint64_t cycles_to_run;
+    int64_t cycles_to_run;
     //amount of cycles left when execution is stopped
-    uint64_t cycles_left;
+    int64_t cycles_left;
 
     //array of modules all malloced, shoud be sorted by name hash
     MinithreadModules *modules;
+    int n_modules;
 
 };
 
@@ -57,7 +58,7 @@ struct minithreadFunc {
     //reference for dlopen
     void *handler;
     //entry function signature
-    void (*fptr)();
+    void (*fptr)(void*);
     
     char* file_name;
     char* func_name;

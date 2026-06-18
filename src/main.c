@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 199309L
+
 #include <stdio.h>
 #include <stdint.h>
 
@@ -9,8 +11,11 @@
 
 #include "./../include/cycles_probe.h"
 
-#define _POSIX_C_SOURCE 199309L
 #include <time.h>
+
+#ifndef TALLY_SOURCE_DIR
+#define TALLY_SOURCE_DIR "."
+#endif
 
 /// Convert seconds to milliseconds
 #define SEC_TO_MS(sec) ((sec)*1000)
@@ -74,7 +79,7 @@ int main(int agrc, char* argv[]){
     struct minithreadModuleOpt* mArray[1];
     mArray[0] = &mOpt;
 
-    load_graph("./../graph.txt");
+    load_graph(TALLY_SOURCE_DIR "/graph.txt");
 
     int number_of_threads = 1;
     int number_of_total_cycles = (int)1e9;

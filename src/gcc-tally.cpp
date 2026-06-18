@@ -243,9 +243,8 @@ protected:
 
         //macro function to insert asm code 
         #define INSERT_ASM(gsi, gsi_insert_instruction, stmt, code_str) {\
-                gimple *asm_stmt = (gimple *) gimple_build_asm_vec(code_str, NULL, NULL, NULL, NULL);\
-                gimple_asm_set_volatile((gasm *) asm_stmt, 1);\
-                gimple_asm_set_input((gasm *) asm_stmt, 1);\
+                gasm *asm_stmt = gimple_build_asm_vec(code_str, NULL, NULL, NULL, NULL);\
+                gimple_asm_set_volatile(asm_stmt, true);\
                 gimple_set_location(asm_stmt, last_valid_location);\
                 gsi_insert_instruction(&(gsi), asm_stmt, GSI_SAME_STMT);\
                 }
@@ -317,7 +316,7 @@ protected:
             */ 
             char *asm_sub_op;
             asprintf(&asm_sub_op,
-                "sub $%d, %%r15\n\t", // subtracts the tally from r15 aka special_counter
+                "sub $%d, %%%%r15\n\t", // subtracts the tally from r15 aka special_counter
                 tally);
             
             #ifdef gcctally_branch_prediction
@@ -326,7 +325,9 @@ protected:
                     TODO example
                 */
                 if(block_count == fun->cfg->x_n_basic_blocks - 2){
+                    #ifdef gcctally_DEBUG
                     printf("inserting fix now %d\n", i);
+                    #endif
                     asprintf(&asm_block1, "jmp ._minithread_fix_branching_label_%d\n\t", label_nr);                            
                     asprintf(&asm_block2, "._minithread_fix_branching_label_%d:\n\t", label_nr);                            
                 }else{
@@ -349,8 +350,8 @@ protected:
                         //first put the continuation label on the stack, then put the break_label so que call ret and consume that position on the stack 
                         //in the context switch the first positon on the stack will be the ip on the next context switch
                         "._minithread_switch_label_%d:\n\t" //
-                        "push ._minithread_continue_label_%1$d@GOTPCREL(%rip)\n\t" //
-                        "push _minithread_break@GOTPCREL(%rip)\n\t" //
+                        "push ._minithread_continue_label_%1$d@GOTPCREL(%%%%rip)\n\t" //
+                        "push _minithread_break@GOTPCREL(%%%%rip)\n\t" //
                         "ret\n\t%s", //
                         label_nr, asm_block2
                 );
@@ -359,8 +360,8 @@ protected:
                 asprintf(&code_str,
                         "%s" //
                         "jg ._minithread_continue_label_%d\n\t" // if the tally is positive, continue execution
-                        "push ._minithread_continue_label_%2$d@GOTPCREL(%rip)\n\t" //
-                        "push _minithread_break@GOTPCREL(%rip)\n\t" //
+                        "push ._minithread_continue_label_%2$d@GOTPCREL(%%%%rip)\n\t" //
+                        "push _minithread_break@GOTPCREL(%%%%rip)\n\t" //
                         "ret\n\t" //
                         "._minithread_continue_label_%2$d:", // this defines the continuation IP value
                         asm_sub_op, label_nr); //parammeter field formating
@@ -444,4 +445,3 @@ extern "C" int plugin_init(struct plugin_name_args* plugin_info,
     register_callback(name, PLUGIN_PASS_MANAGER_SETUP, NULL, &pass_info);
     return 0;
 }
-

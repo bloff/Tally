@@ -4,6 +4,12 @@
 
 const int GRAPH_HASH = HASH_S("graph");
 
+void add_hop(){
+	struct graph_struct* g = minithread_find(GRAPH_HASH);
+	if(g != NULL){
+		g->hops++;
+	}
+}
 
 int get_n_nodes(){
 	return N_G;
@@ -30,4 +36,3 @@ int get_x_neighbour(int node, int index){
 	//printf("node: %d index: %d\n", node, index);
 	return G[node][index];
 }
-

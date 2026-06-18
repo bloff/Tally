@@ -6,6 +6,10 @@
 #include <stdio.h>
 #include <assert.h>
 
+#ifndef TALLY_SOURCE_DIR
+#define TALLY_SOURCE_DIR "."
+#endif
+
 
 void _minithread_reset_stack(Minithread thread);
 static int append(char **str, const char *buf, int size);
@@ -29,21 +33,26 @@ MinithreadCode _load_func(MinithreadFuncArg f){
 
     printf("loading file %s %s\n", f->file_name, f->func_name);
 
-    if(!f->compiled){
+    asprintf(&(code->file_name), "%s", f->file_name);
+    asprintf(&(code->func_name), "%s", f->func_name);
 
-        asprintf(&(code->file_name), "%s", f->file_name);
-        asprintf(&(code->func_name), "%s", f->func_name);
+    if(!f->compiled){
         code->id = id;
         
         //create the command and run the script
         char *command;
-        asprintf(&command, "bash ./../script.sh %s", f->file_name);
+        asprintf(&command, "bash \"%s/script.sh\" %s", TALLY_SOURCE_DIR, f->file_name);
         
         #ifdef gcctally_DEBUG_RUNTIME
             printf("calling: %s\n", command);
         #endif
 
         int status = system(command);
+        if(status != 0){
+            fprintf(stderr, "ERROR: failed to compile %s with status %d\n", f->file_name, status);
+            free(command);
+            abort();
+        }
 
         //clean the memory
         free(command);
@@ -51,8 +60,13 @@ MinithreadCode _load_func(MinithreadFuncArg f){
 
     //load the file compiled in the script
     char *path;
-    asprintf(&path, "./../dl/%s.so", f->file_name);
+    asprintf(&path, "%s/dl/%s.so", TALLY_SOURCE_DIR, f->file_name);
     code->handler = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+    if(code->handler == NULL){
+        fprintf(stderr, "ERROR: unable to load %s: %s\n", path, dlerror());
+        free(path);
+        abort();
+    }
 
     free(path);
 
@@ -64,6 +78,7 @@ MinithreadCode _load_func(MinithreadFuncArg f){
     code->fptr = (void (*)(void*)) dlsym(code->handler, f->func_name);
     if(code->fptr == NULL){
         printf("ERROR: unable to find the function %s\n", f->func_name);
+        abort();
     } 
 
     return code;
@@ -80,8 +95,7 @@ void minithread_join(Minithread thread){
     //free the func struct 
     //at this time we need to delete this memory as each minithread as a struct to it self
     //TODO: write a func manager so that there is only one func struct per func obj/thread
-    free(thread->body->handler);
-    free(thread->body->fptr);
+    dlclose(thread->body->handler);
     free(thread->body->file_name);
     free(thread->body->func_name);
     free(thread->body);
@@ -168,6 +182,7 @@ Minithread minithread_init(Minithread _thread, uint64_t mem_size, void* init_arg
     thread->sp_base = thread->sp;
 
     thread->cycles_to_run = cycles;
+    thread->cycles_left = 0;
 
     thread->init_Args = init_args;
 
@@ -177,6 +192,7 @@ Minithread minithread_init(Minithread _thread, uint64_t mem_size, void* init_arg
     char* modules_path = NULL; 
 
     if(modules != NULL){
+        thread->n_modules = n_modules;
         thread->modules = malloc( n_modules * sizeof(void*));
 	    
         #ifdef gcctally_DEBUG_RUNTIME
@@ -193,6 +209,9 @@ Minithread minithread_init(Minithread _thread, uint64_t mem_size, void* init_arg
         #endif
         //after initing all the modules we need to sort then so that we can use the find function
         qsort(thread->modules, n_modules, sizeof(void*), _minithread_comp);
+    }else{
+        thread->modules = NULL;
+        thread->n_modules = 0;
     }
     
     thread->body = _load_func(f);
@@ -222,8 +241,13 @@ void minithread_run_cycle(Minithread _thread){
     if(thread->state == MINITHREAD_ERRORED || thread->state == MINITHREAD_RETURNED){
         fprintf(stderr, "trying to run thread that cannot run anymore\n");
         return; 
-    }else if(thread->state == MINITHREAD_VOLUNTARY_YIELD || thread->state == MINITHREAD_FORCE_YIELD || thread->state == MINITHREAD_NEW){ 
+    }else if(thread->state == MINITHREAD_VOLUNTARY_YIELD || thread->state == MINITHREAD_NEW){
         mt_arg = thread->cycles_to_run;
+    }else if(thread->state == MINITHREAD_FORCE_YIELD){
+        // Forced yields can overshoot the exact budget because tally checks happen
+        // at instrumented basic-block boundaries. Carry that negative balance
+        // forward so the next cycle starts with the debt already subtracted.
+        mt_arg = thread->cycles_to_run + thread->cycles_left;
     }else if(thread->state == MINITHREAD_INTERRUPTED){
         //the context switch happens not because of the instrmented mecanism but because of a macro like error or yeild
         mt_arg = thread->cycles_left;
@@ -234,6 +258,9 @@ void minithread_run_cycle(Minithread _thread){
     
     //if the amount of cycles to run is less then 0 then the thread is not suposed to run
     if(mt_arg <= 0){
+        if(thread->state == MINITHREAD_FORCE_YIELD){
+            thread->cycles_left = mt_arg;
+        }
         threadInUse = NULL;
         return;            
     }
@@ -299,7 +326,7 @@ void minithread_run_cycle(Minithread _thread){
     if(thread->sp + 30 == thread->sp_base)
         thread->state = MINITHREAD_RETURNED;
     
-    uint64_t cycles_left = 0;
+    int64_t cycles_left = 0;
     //deppeding on how the thread exited we clean its intruction pointer and state
     switch(thread->state){
         case MINITHREAD_RUNNING:
@@ -369,11 +396,11 @@ typedef struct gcctally_module_wrapper* gccModule;
 *   @return Returns the pointer to the module if it exists otherwise it return NULL
 */
 void* minithread_m_find(Minithread thread, uint32_t name_hash){
-    int m, l = 0, r = sizeof(thread->modules) / sizeof(MinithreadModules) - 1;
+    int m, l = 0, r = thread->n_modules - 1;
 
 
     while(l <= r){
-        m = l + (r - 1) / 2; 
+        m = l + (r - l) / 2; 
         gccModule wrapper = (gccModule) thread->modules[m]; 
 
         if(wrapper->hash == name_hash)
@@ -405,5 +432,10 @@ void* minithread_find(uint32_t name_hash){
 */
 int _minithread_comp(const void* a, const void* b){
     typedef struct gcctally_module_wrapper* gccModule;
-    return ((gccModule)a)->hash - ((gccModule)b)->hash;
+    gccModule module_a = *(gccModule const *)a;
+    gccModule module_b = *(gccModule const *)b;
+
+    if(module_a->hash < module_b->hash) return -1;
+    if(module_a->hash > module_b->hash) return 1;
+    return 0;
 }

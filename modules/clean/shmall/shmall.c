@@ -1,5 +1,7 @@
 #include "./../../../include/shmall.h"
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 uint shmall_get_bin_index(size_t sz);
 void shmall_create_foot(node_t *head);
@@ -41,8 +43,8 @@ void init_shmall(void* module_strut, void* args_ptr){
 
     printf("phase 2\n");
     
-    heap->start = (void *) heap->module.start;
-    heap->end   = (void *) (heap->module.start + args->size);
+    heap->start = (char *) heap->module.start;
+    heap->end = heap->start + args->size;
 
     printf("ended func\n");
 }

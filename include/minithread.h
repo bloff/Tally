@@ -27,7 +27,7 @@ typedef void *Ptr;
 extern "C" {
 #endif
 
-register void *mt_arg asm("r15");
+register int64_t mt_arg asm("r15");
 
 /*
  * this will be updated every time a new thread is context switched in
@@ -77,29 +77,29 @@ extern _Thread_local uint16_t id;
     "\tmovhps %xmm6, -32(%rsp)\n"\
     "\tmovlps %xmm6, -24(%rsp)\n"\
     "\tmovhps %xmm7, -16(%rsp)\n"\
-    "\tmovlps %xmm7, -8(%rsp)\n"\ 
+    "\tmovlps %xmm7, -8(%rsp)\n"\
     );
 
 //put the registers saved in the last context switch to the stack again on the registers
 //each xmm register as 128 bits (16 bytes) so we need to load first the top half then the lower half
 #define POP_REGISTERS asm (\
     "\tadd $128, %rsp\n" /* 16 (8 * 2) (128 bit per float register) * 8 */  \
-    "\tmovhps %xmm0, -128(%rsp)\n"\
-    "\tmovlps %xmm0, -120(%rsp)\n"\
-    "\tmovhps %xmm1, -112(%rsp)\n"\
-    "\tmovlps %xmm1, -104(%rsp)\n"\
-    "\tmovhps %xmm2, -96(%rsp)\n"\
-    "\tmovlps %xmm2, -88(%rsp)\n"\
-    "\tmovhps %xmm3, -80(%rsp)\n"\
-    "\tmovlps %xmm3, -72(%rsp)\n"\
-    "\tmovhps %xmm4, -64(%rsp)\n"\
-    "\tmovlps %xmm4, -56(%rsp)\n"\
-    "\tmovhps %xmm5, -48(%rsp)\n"\
-    "\tmovlps %xmm5, -40(%rsp)\n"\
-    "\tmovhps %xmm6, -32(%rsp)\n"\
-    "\tmovlps %xmm6, -24(%rsp)\n"\
-    "\tmovhps %xmm7, -16(%rsp)\n"\
-    "\tmovlps %xmm7, -8(%rsp)\n"\ 
+    "\tmovhps -128(%rsp), %xmm0\n"\
+    "\tmovlps -120(%rsp), %xmm0\n"\
+    "\tmovhps -112(%rsp), %xmm1\n"\
+    "\tmovlps -104(%rsp), %xmm1\n"\
+    "\tmovhps -96(%rsp), %xmm2\n"\
+    "\tmovlps -88(%rsp), %xmm2\n"\
+    "\tmovhps -80(%rsp), %xmm3\n"\
+    "\tmovlps -72(%rsp), %xmm3\n"\
+    "\tmovhps -64(%rsp), %xmm4\n"\
+    "\tmovlps -56(%rsp), %xmm4\n"\
+    "\tmovhps -48(%rsp), %xmm5\n"\
+    "\tmovlps -40(%rsp), %xmm5\n"\
+    "\tmovhps -32(%rsp), %xmm6\n"\
+    "\tmovlps -24(%rsp), %xmm6\n"\
+    "\tmovhps -16(%rsp), %xmm7\n"\
+    "\tmovlps -8(%rsp), %xmm7\n"\
     "\tpopq %rax\n"\
     "\tpopq %rcx\n"\
     "\tpopq %rdx\n"\

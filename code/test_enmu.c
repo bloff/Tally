@@ -2,8 +2,8 @@
 
 typedef enum{
     a = 0,
-    b = 0,
-    c = 1
+    b = 1,
+    c = 2
 } tt;
 
 void f(tt p){
