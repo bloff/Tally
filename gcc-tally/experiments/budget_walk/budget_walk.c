@@ -42,7 +42,8 @@ int main(int argc, char* argv[]){
     struct minithreadFuncOpt fOpt;
     fOpt.file_name = "experiments/budget_walk/instrumented/random_walk_budget";
     fOpt.func_name = "run_walk_budget";
-    fOpt.compiled = 0;
+    const char *assume_compiled = getenv("TALLY_ASSUME_COMPILED");
+    fOpt.compiled = assume_compiled != NULL && assume_compiled[0] != '\0' && assume_compiled[0] != '0';
 
     struct minithreadModuleOpt graphModule;
     graphModule.module_name = "graph";
