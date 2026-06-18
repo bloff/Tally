@@ -55,6 +55,7 @@ def parse_args():
 
 def parse_number_list(value):
     numbers = []
+    seen = set()
     for token in value.split(","):
         token = token.strip()
         if not token:
@@ -62,8 +63,10 @@ def parse_number_list(value):
         number = int(token)
         if number <= 0:
             raise ValueError(f"invalid positive integer: {token}")
-        numbers.append(number)
-    return sorted(dict.fromkeys(numbers))
+        if number not in seen:
+            numbers.append(number)
+            seen.add(number)
+    return numbers
 
 
 def build_llvm_workload(repo_root, build_root, llvm_pass):
