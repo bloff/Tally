@@ -7,6 +7,7 @@
 
 #include <stdlib.h>
 #include <memory.h>
+#include <string.h>
 #include <stdio.h>
 #include <assert.h>
 
@@ -26,12 +27,21 @@ _Thread_local Minithread threadInUse;
 //variable not used in this version of the library, here as the fundation to expand to multithreading
 _Thread_local uint16_t id;
 
+static MinithreadCode loaded_code_cache = NULL;
+
 /*
 *   @brief Uses dlopen to load the function needed, allocates and sets up the MinithreadCode wrapper struct, it can also compile and instrument the file were the function is located, this is not advised as system calls are costly
 *   @param f Wrapper struct that contains all the information about the function
 *   @return Returns the MinihtreadCode wrapper function with everything configured
 */
 MinithreadCode _load_func(MinithreadFuncArg f){
+    for(MinithreadCode cached = loaded_code_cache; cached != NULL; cached = cached->cache_next){
+        if(strcmp(cached->file_name, f->file_name) == 0 && strcmp(cached->func_name, f->func_name) == 0){
+            cached->refcount++;
+            return cached;
+        }
+    }
+
     MinithreadCode code;
     code = (MinithreadCode) malloc(sizeof (struct minithreadFunc));
 
@@ -85,6 +95,10 @@ MinithreadCode _load_func(MinithreadFuncArg f){
         abort();
     } 
 
+    code->refcount = 1;
+    code->cache_next = loaded_code_cache;
+    loaded_code_cache = code;
+
     return code;
 }
 
@@ -95,10 +109,21 @@ MinithreadCode _load_func(MinithreadFuncArg f){
 void minithread_join(Minithread thread){
     //free the memory of the minithread
     free(thread->stack);
-    
-    //free the func struct 
-    //at this time we need to delete this memory as each minithread as a struct to it self
-    //TODO: write a func manager so that there is only one func struct per func obj/thread
+
+    if(thread->body->refcount > 1){
+        thread->body->refcount--;
+        return;
+    }
+
+    MinithreadCode *slot = &loaded_code_cache;
+    while(*slot != NULL){
+        if(*slot == thread->body){
+            *slot = thread->body->cache_next;
+            break;
+        }
+        slot = &((*slot)->cache_next);
+    }
+
     dlclose(thread->body->handler);
     free(thread->body->file_name);
     free(thread->body->func_name);

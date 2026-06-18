@@ -67,6 +67,8 @@ struct minithreadFunc {
     char* func_name;
     //thread id, used for magic_dl and linking diferent versions of the same obj file
     uint16_t id;
+    uint64_t refcount;
+    MinithreadCode cache_next;
 };
 
 #endif

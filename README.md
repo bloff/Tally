@@ -78,3 +78,25 @@ The script writes:
 The HTML report contains heatmaps for LLVM/GCC throughput ratio and absolute
 throughput. Use smaller `--thread-counts`, `--budgets`, or `--target-edges`
 values for quick smoke runs.
+
+## Million-Thread Stress Benchmark
+
+For very high minithread counts, use the separate summary-only stress runner:
+
+```sh
+python3 tests/compare-million-threads.py \
+  --repo-root . \
+  --build-root /tmp/tally-all-build \
+  --gcc-binary gcc-tally/bin/self_walk \
+  --llvm-host /tmp/tally-all-build/llvm-tally/bin/llvm-tally-self-walk \
+  --llvm-pass /tmp/tally-all-build/llvm-tally/llvm-tally-pass.so
+```
+
+Defaults are `k = 1000000`, `target_edges = 10000000000`, and
+`b = 10, 20, 50, 100, 200, 500, 1000, 5000, 10000`. The script passes
+summary-only flags to the hosts so they do not print one million per-thread
+rows. It also divides a stack-memory budget across the minithreads; the default
+is `--stack-budget-gib 16`, which gives roughly 16 KiB of stack per minithread
+at `k = 1000000`.
+
+Outputs are written under `results/million-thread-stress/`.

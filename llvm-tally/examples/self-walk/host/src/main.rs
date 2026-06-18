@@ -8,6 +8,7 @@ use std::env;
 use std::error::Error;
 use std::ffi::c_void;
 use std::path::PathBuf;
+use std::time::Instant;
 
 const DEFAULT_TARGET_EDGES: u64 = 50_000_000;
 const BENCHMARK_STACK_SIZE: usize = 64 * 1024;
@@ -30,6 +31,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let thread_count = parse_arg(&args, 2, 10_usize);
     let budget = parse_arg(&args, 3, 100_i64);
     let target_edges = parse_arg(&args, 4, DEFAULT_TARGET_EDGES);
+    let stack_size = parse_arg(&args, 5, BENCHMARK_STACK_SIZE);
+    let summary_only = parse_bool_arg(&args, 6);
 
     if thread_count == 0 {
         return Err("thread_count must be positive".into());
@@ -63,11 +66,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             entry,
             &mut **args as *mut SelfWalkArgs as *mut c_void,
             budget,
-            BENCHMARK_STACK_SIZE,
+            stack_size,
         )?;
     }
 
     let mut scheduler_cycles = 0_u64;
+    let mut thread_cycles = 0_u64;
+    let run_start = Instant::now();
     while active_count > 0 {
         scheduler_cycles += 1;
         for id in 0..thread_count {
@@ -76,6 +81,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
 
             let state = manager.run_cycle(id)?;
+            thread_cycles += 1;
             if state == ThreadState::Returned
                 || walk_args[id].vertices_walked >= walk_args[id].target_vertices
             {
@@ -86,6 +92,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     }
+    let run_seconds = run_start.elapsed().as_secs_f64();
 
     let stats = manager.stats();
     let total_edges: u64 = walk_args.iter().map(|args| args.vertices_walked).sum();
@@ -94,8 +101,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("budget_per_cycle: {budget}");
     println!("target_edges: {target_edges}");
     println!("total_edges: {total_edges}");
+    println!("run_seconds: {run_seconds:.9}");
     println!("scheduler_cycles: {scheduler_cycles}");
+    println!("thread_cycles: {thread_cycles}");
+    println!("stack_bytes: {stack_size}");
+    println!("summary_only: {}", u8::from(summary_only));
     println!();
+
+    if summary_only {
+        return Ok(());
+    }
+
     println!(
         "thread,budget_per_cycle,target_edges,vertices_walked,cycles_run,remaining_budget,charges"
     );
@@ -122,6 +138,12 @@ where
     args.get(index)
         .and_then(|value| value.parse::<T>().ok())
         .unwrap_or(fallback)
+}
+
+fn parse_bool_arg(args: &[String], index: usize) -> bool {
+    args.get(index)
+        .map(|value| !value.is_empty() && value != "0")
+        .unwrap_or(false)
 }
 
 fn target_for_thread(total_edges: u64, thread_count: usize, index: usize) -> u64 {

@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <time.h>
 
 #include "minithread.h"
 #include "self_walk.h"
@@ -17,6 +18,10 @@
 #ifndef TALLY_DEFAULT_TARGET_EDGES
 #define TALLY_DEFAULT_TARGET_EDGES 50000000ULL
 #endif
+
+static bool parse_bool_arg(const char *value){
+    return value != NULL && value[0] != '\0' && value[0] != '0';
+}
 
 static int64_t parse_positive_i64(const char *value, int64_t fallback){
     char *end = NULL;
@@ -51,14 +56,22 @@ static uint64_t target_for_thread(uint64_t total_edges, size_t thread_count, siz
     return base + (index < remainder ? 1u : 0u);
 }
 
+static double elapsed_seconds(struct timespec start, struct timespec end){
+    return (double)(end.tv_sec - start.tv_sec) + ((double)(end.tv_nsec - start.tv_nsec) / 1000000000.0);
+}
+
 int main(int argc, char* argv[]){
     size_t thread_count = 10;
     int64_t budget = 100;
     uint64_t target_edges = TALLY_DEFAULT_TARGET_EDGES;
+    size_t stack_words = 1 << 10;
+    bool summary_only = false;
 
     if(argc > 1) thread_count = parse_positive_size(argv[1], thread_count);
     if(argc > 2) budget = parse_positive_i64(argv[2], budget);
     if(argc > 3) target_edges = parse_positive_u64(argv[3], target_edges);
+    if(argc > 4) stack_words = parse_positive_size(argv[4], stack_words);
+    if(argc > 5) summary_only = parse_bool_arg(argv[5]);
 
     struct minithreadFuncOpt fOpt;
     fOpt.file_name = "experiments/self_walk/instrumented/self_walk";
@@ -69,8 +82,8 @@ int main(int argc, char* argv[]){
     Minithread *threads = calloc(thread_count, sizeof(Minithread));
     struct self_walk_args *args = calloc(thread_count, sizeof(struct self_walk_args));
     bool *done = calloc(thread_count, sizeof(bool));
-    uint64_t *cycles_run = calloc(thread_count, sizeof(uint64_t));
-    if(threads == NULL || args == NULL || done == NULL || cycles_run == NULL){
+    uint64_t *cycles_run = summary_only ? NULL : calloc(thread_count, sizeof(uint64_t));
+    if(threads == NULL || args == NULL || done == NULL || (!summary_only && cycles_run == NULL)){
         fprintf(stderr, "failed to allocate benchmark state\n");
         return 1;
     }
@@ -88,7 +101,7 @@ int main(int argc, char* argv[]){
 
         threads[i] = minithread_init(
             NULL,
-            1 << 10,
+            stack_words,
             &args[i],
             &fOpt,
             NULL,
@@ -99,6 +112,10 @@ int main(int argc, char* argv[]){
     }
 
     uint64_t scheduler_cycles = 0;
+    uint64_t thread_cycles = 0;
+    struct timespec run_start;
+    struct timespec run_end;
+    clock_gettime(CLOCK_MONOTONIC, &run_start);
     while(active_threads > 0){
         scheduler_cycles++;
         for(size_t i = 0; i < thread_count; i++){
@@ -107,7 +124,10 @@ int main(int argc, char* argv[]){
             }
 
             minithread_run_cycle(threads[i]);
-            cycles_run[i]++;
+            thread_cycles++;
+            if(!summary_only){
+                cycles_run[i]++;
+            }
             if(threads[i]->state == MINITHREAD_RETURNED || args[i].vertices_walked >= args[i].target_vertices){
                 done[i] = true;
                 active_threads--;
@@ -117,6 +137,7 @@ int main(int argc, char* argv[]){
             }
         }
     }
+    clock_gettime(CLOCK_MONOTONIC, &run_end);
 
     uint64_t total_edges = 0;
     for(size_t i = 0; i < thread_count; i++){
@@ -127,8 +148,18 @@ int main(int argc, char* argv[]){
     printf("budget_per_cycle: %" PRId64 "\n", budget);
     printf("target_edges: %" PRIu64 "\n", target_edges);
     printf("total_edges: %" PRIu64 "\n", total_edges);
+    printf("run_seconds: %.9f\n", elapsed_seconds(run_start, run_end));
     printf("scheduler_cycles: %" PRIu64 "\n", scheduler_cycles);
+    printf("thread_cycles: %" PRIu64 "\n", thread_cycles);
+    printf("stack_words: %zu\n", stack_words);
+    printf("stack_bytes: %zu\n", stack_words * sizeof(void*));
+    printf("summary_only: %d\n", summary_only ? 1 : 0);
     printf("\n");
+
+    if(summary_only){
+        return 0;
+    }
+
     printf("thread,budget_per_cycle,target_edges,vertices_walked,cycles_run\n");
 
     for(size_t i = 0; i < thread_count; i++){
