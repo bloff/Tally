@@ -1,3 +1,6 @@
+/*
+ * Internal linked-list helpers used by the instrumented SHMALL heap module.
+ */
 #ifndef LLIST_H
 #define LLIST_H
 

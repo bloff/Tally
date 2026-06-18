@@ -1,3 +1,6 @@
+/*
+ * Compile-time feature toggles for the GCC tally plugin and minithread runtime.
+ */
 #ifdef GCCTALLY_DEBUG
 #define gcctally_DEBUG
 #endif

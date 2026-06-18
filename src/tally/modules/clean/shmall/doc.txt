@@ -1,0 +1,4 @@
+shmall is the small allocator module used by instrumented Tally code.
+
+The allocator code was originally based on:
+https://github.com/CCareaga/heap_allocator

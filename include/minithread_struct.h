@@ -1,3 +1,6 @@
+/*
+ * Internal data structures backing minithread state, loaded code, and modules.
+ */
 #ifndef _MINITHREAD_STRUCT
 #define _MINITHREAD_STRUCT
 

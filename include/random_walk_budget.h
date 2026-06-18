@@ -1,3 +1,6 @@
+/*
+ * Arguments passed to the budget-walk experiment's instrumented random walker.
+ */
 #ifndef RANDOM_WALK_BUDGET_H
 #define RANDOM_WALK_BUDGET_H
 

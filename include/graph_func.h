@@ -1,3 +1,6 @@
+/*
+ * Small graph traversal argument types used by the example workloads.
+ */
 #ifndef GRAPH_FUNC_
 #define GRAPH_FUNC_
 

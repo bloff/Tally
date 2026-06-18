@@ -1,0 +1,8 @@
+**/.DS_Store
+
+# Build and generated outputs. Some historical artifacts in these directories
+# are still tracked, but new files should not be treated as source.
+/build/
+/bin/
+/dl/
+/results/

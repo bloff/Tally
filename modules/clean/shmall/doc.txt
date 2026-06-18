@@ -1,2 +1,0 @@
-shmall is a heap allocator 
-https://github.com/CCareaga/heap_allocator

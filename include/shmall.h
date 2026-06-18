@@ -1,3 +1,6 @@
+/*
+ * Internal declarations for the SHMALL private heap module.
+ */
 #ifndef SHMALL_H
 #define SHMALL_H
 

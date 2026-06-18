@@ -1,3 +1,7 @@
+/*
+ * Unit test for the DJB2-style runtime hash and compile-time HASH_S macro used
+ * to identify Tally modules.
+ */
 #include <stdint.h>
 #include <stdio.h>
 

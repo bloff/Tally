@@ -1,3 +1,6 @@
+/*
+ * Instrumented graph module API callable from minithread workloads.
+ */
 #ifndef GRAPH_API
 #define GRAPH_API
 

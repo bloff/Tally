@@ -1,3 +1,7 @@
+/*
+ * API and macros exposed to instrumented code so it can find modules and
+ * context-switch back to the minithread manager.
+ */
 #ifndef _MINITHREAD_API
 #define _MINITHREAD_API
 

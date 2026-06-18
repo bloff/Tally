@@ -1,3 +1,7 @@
+/*
+ * Legacy module wrapper declaration retained for reference while the active
+ * runtime uses gcctally_module_wrapper from minithread_api.h.
+ */
 #ifndef MODULES_H
 #define MODULES_H
 

@@ -1,3 +1,0 @@
-this folder contains all the modules that gcc tally can load to each minithread
-
-modules can be diferent type of allocators, external libs api's, manegers of the special memory location to be used as a buffer for comunicating 

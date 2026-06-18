@@ -1,3 +1,6 @@
+/*
+ * Instrumented SHMALL allocation API callable from minithread workloads.
+ */
 #ifndef SHMALL_API
 #define SHMALL_API
 

@@ -1,3 +1,7 @@
+/*
+ * Clean-side graph module declarations shared by the host runtime and graph
+ * traversal workloads.
+ */
 #ifndef GRAPH_
 #define GRAPH_
 

@@ -1,3 +1,7 @@
+/*
+ * Runtime helper API for estimating how much tally work a minithread consumed
+ * during scheduler experiments.
+ */
 #ifndef _CYCLES_PROBE_
 #define _CYLCES_PROBE_
 
@@ -5,7 +9,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include "./../include/minithread.h"
+#include "minithread.h"
 
 typedef struct stMinithreadInfo* MinithreadInfo;
 

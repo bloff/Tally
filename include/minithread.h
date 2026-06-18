@@ -1,3 +1,6 @@
+/*
+ * Public minithread runtime API and AMD64 context-save macros.
+ */
 #ifndef _MINITHREAD_H
 #define _MINITHREAD_H
 

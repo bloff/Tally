@@ -1,3 +1,7 @@
+/*
+ * Unit test for the clean graph module loader using the repository's checked-in
+ * graph fixture.
+ */
 #include <stdio.h>
 
 #include "graph.h"
@@ -7,7 +11,7 @@
 #endif
 
 int main(void) {
-    load_graph(TALLY_SOURCE_DIR "/graph.txt");
+    load_graph(TALLY_SOURCE_DIR "/data/graph.txt");
 
     if (N_G != 1000) {
         fprintf(stderr, "expected 1000 graph nodes, got %d\n", N_G);
