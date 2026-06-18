@@ -6,3 +6,11 @@
 /bin/
 /dl/
 /results/
+/gcc-tally/build/
+/gcc-tally/bin/
+/gcc-tally/dl/
+/gcc-tally/results/
+/llvm-tally/build/
+/llvm-tally/bin/
+/llvm-tally/dl/
+/llvm-tally/target/

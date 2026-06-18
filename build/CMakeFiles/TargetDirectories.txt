@@ -1,5 +1,0 @@
-/code/tallyproj/gcctally_v3/build/CMakeFiles/rebuild_cache.dir
-/code/tallyproj/gcctally_v3/build/CMakeFiles/main.dir
-/code/tallyproj/gcctally_v3/build/CMakeFiles/gcc-tally.dir
-/code/tallyproj/gcctally_v3/build/CMakeFiles/edit_cache.dir
-/code/tallyproj/gcctally_v3/build/CMakeFiles/minithread.dir

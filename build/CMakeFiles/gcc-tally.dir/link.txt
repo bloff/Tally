@@ -1,1 +1,0 @@
-/usr/bin/c++ -fPIC  -fms-extensions  -shared -Wl,-soname,gcc-tally.so -o ../bin/gcc-tally.so CMakeFiles/gcc-tally.dir/src/gcc-tally.cpp.o 

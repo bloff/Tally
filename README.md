@@ -1,51 +1,41 @@
 # Tally
 
-Tally is an experimental AMD64/GCC runtime for running C functions as
-preemptible minithreads with approximate CPU-cycle budgets.
+This repository contains two implementations of the Tally idea: running small
+computations with software-enforced work budgets and cooperative preemption.
 
-## Layout
+- `gcc-tally/`: the original C/GCC-plugin implementation.
+- `llvm-tally/`: a Rust/LLVM prototype that instruments Rust-emitted LLVM
+  bitcode with an LLVM FunctionPass and yields through a Rust minithread
+  runtime.
+- `thesis/`: Andre Manada's original thesis PDF, source, and figures.
 
-- `src/tally/`: Tally library implementation.
-  - `runtime/`: minithread manager, context switching, dynamic loading.
-  - `plugin/`: GCC plugin that instruments GIMPLE basic blocks.
-  - `modules/`: clean host-side modules and instrumented module APIs.
-- `include/`: runtime, plugin, module, and experiment headers.
-- `examples/`: demo host program and instrumented example workloads.
-- `experiments/`: benchmark/measurement programs such as `budget_walk`.
-- `tests/`: CTest units plus extra instrumented compiler/runtime probes.
-- `data/`: graph fixture used by examples and tests.
-- `scripts/`: helper scripts for dynamic instrumentation and plotting.
-- `thesis/`: Andre Manada thesis reference PDF, source, and images.
-
-For a deeper guide, see `SOURCE-OVERVIEW.md`.
-
-## Build And Test
+## Build Everything
 
 ```sh
-cmake -S . -B build
-cmake --build build
-ctest --test-dir build --output-on-failure
+cmake -S . -B /tmp/tally-all-build
+cmake --build /tmp/tally-all-build
+ctest --test-dir /tmp/tally-all-build --output-on-failure
 ```
 
-The build writes executables, the GCC plugin, and the runtime static library to
-`bin/`.
-
-## Run The Demo
+## Build The GCC Implementation
 
 ```sh
-./bin/main
+cmake -S gcc-tally -B /tmp/tally-gcc-build
+cmake --build /tmp/tally-gcc-build
+ctest --test-dir /tmp/tally-gcc-build --output-on-failure
 ```
 
-The demo dynamically instruments `examples/instrumented/random_walk.c` into
-`dl/examples/instrumented/random_walk.so`, loads `data/graph.txt`, and runs the
-workload through the minithread scheduler.
-
-## Run The Budget-Walk Experiment
+## Build The LLVM/Rust Prototype
 
 ```sh
-./bin/budget_walk
-python3 scripts/plot_budget_walk_scaling.py
+cmake -S llvm-tally -B /tmp/tally-llvm-build
+cmake --build /tmp/tally-llvm-build
+ctest --test-dir /tmp/tally-llvm-build --output-on-failure
 ```
 
-The plotting script runs the experiment, writes CSV data, and saves a PNG graph
-under `results/`.
+The Rust workload pipeline can also be run manually:
+
+```sh
+llvm-tally/scripts/build-rust-workload.sh examples/random-walk /tmp/tally-llvm-build /tmp/tally-llvm-build/llvm-tally-pass.so
+/tmp/tally-llvm-build/bin/llvm-tally-random-walk
+```
