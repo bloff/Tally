@@ -40,7 +40,7 @@ llvm-tally/scripts/build-rust-workload.sh examples/random-walk /tmp/tally-llvm-b
 /tmp/tally-llvm-build/bin/llvm-tally-random-walk
 
 llvm-tally/scripts/build-rust-workload.sh examples/self-walk /tmp/tally-llvm-build /tmp/tally-llvm-build/llvm-tally-pass.so
-/tmp/tally-llvm-build/bin/llvm-tally-self-walk llvm-tally/dl/examples/self-walk/self_walk.so
+/tmp/tally-llvm-build/bin/llvm-tally-self-walk llvm-tally/dl/examples/self-walk/self_walk.so 10 100 50000000
 ```
 
 ## Compare GCC/C And LLVM/Rust Self-Contained Runtime Throughput
@@ -61,5 +61,20 @@ same synthetic degree-4 random walk. Graph generation and vertex counting happen
 inside the instrumented code in both languages; there are no host graph calls in
 the measured loop. The runtimes still use their native accounting strategies:
 GCC keeps its reserved-register budget and LLVM/Rust keeps its memory-backed
-budget. The script reports timing and vertices/second, but does not assert a
-winner because benchmark results are machine- and load-sensitive.
+budget.
+
+By default the comparison runs every combination of:
+
+- `k = 1, 2, ..., 10, 20, 30, 40, 50, 100, 200, 300, 400, 500, 1000`
+- `b = 10, 20, 50, 100, 200, 500, 1000`
+- `target_edges = 50000000` per `(k, b, implementation)` run
+
+The script writes:
+
+- `results/performance-matrix/performance-matrix-detail.csv`
+- `results/performance-matrix/performance-matrix-comparison.csv`
+- `results/performance-matrix/performance-matrix-report.html`
+
+The HTML report contains heatmaps for LLVM/GCC throughput ratio and absolute
+throughput. Use smaller `--thread-counts`, `--budgets`, or `--target-edges`
+values for quick smoke runs.

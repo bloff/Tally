@@ -30,8 +30,10 @@ The demo prints CSV rows with one row per minithread.
 
 ```sh
 llvm-tally/scripts/build-rust-workload.sh examples/self-walk /tmp/tally-llvm-build /tmp/tally-llvm-build/llvm-tally-pass.so
-/tmp/tally-llvm-build/bin/llvm-tally-self-walk llvm-tally/dl/examples/self-walk/self_walk.so
+/tmp/tally-llvm-build/bin/llvm-tally-self-walk llvm-tally/dl/examples/self-walk/self_walk.so 10 100 50000000
 ```
 
 This variant keeps the graph algorithm inside the instrumented Rust workload so
-it can be compared more directly with `gcc-tally/bin/self_walk`.
+it can be compared more directly with `gcc-tally/bin/self_walk`. Its arguments
+after the shared object path are `thread_count`, `budget_per_cycle`, and
+`target_edges`.

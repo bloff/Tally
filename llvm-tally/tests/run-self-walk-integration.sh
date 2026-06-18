@@ -8,7 +8,7 @@ PASS_PLUGIN="$3"
 HOST_BINARY="$4"
 
 WORKLOAD_SO="$("${LLVM_TALLY_DIR}/scripts/build-rust-workload.sh" examples/self-walk "${BUILD_DIR}" "${PASS_PLUGIN}")"
-OUTPUT="$("${HOST_BINARY}" "${WORKLOAD_SO}" 300 100 100)"
+OUTPUT="$("${HOST_BINARY}" "${WORKLOAD_SO}" 10 100 10000)"
 
 echo "${OUTPUT}"
 
@@ -20,17 +20,16 @@ fi
 
 if ! printf '%s\n' "${OUTPUT}" | awk -F, '
     /^thread,/ {
-        if ($1 != "thread" || $2 != "budget_per_metacycle" || $4 != "vertices_walked") exit 1
+        if ($1 != "thread" || $2 != "budget_per_cycle" || $3 != "target_edges" || $4 != "vertices_walked") exit 1
         next
     }
     $1 ~ /^[0-9]+$/ {
-        if ($4 <= 0) exit 1
-        if (seen > 0 && $2 <= prev_budget) exit 1
-        if (seen > 0 && $4 < prev_work) exit 1
-        prev_budget = $2
-        prev_work = $4
+        if ($3 <= 0) exit 1
+        if ($4 < $3) exit 1
+        total += $4
         seen++
     }
+    END { if (total < 10000) exit 1 }
 '; then
     echo "self-walk CSV failed shape or monotonicity checks" >&2
     exit 1

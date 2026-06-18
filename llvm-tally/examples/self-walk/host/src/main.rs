@@ -1,21 +1,23 @@
 /*
- * Host runner for the llvm-tally self-contained random-walk benchmark. It
- * loads the instrumented Rust workload and reports each workload-owned vertex
- * counter after running fixed scheduler metacycles.
+ * Host runner for the llvm-tally self-contained random-walk benchmark. It runs
+ * k instrumented Rust minithreads with the same budget until they collectively
+ * traverse a requested number of synthetic graph edges.
  */
-use llvm_tally_runtime::TallyManager;
+use llvm_tally_runtime::{TallyManager, ThreadState};
 use std::env;
 use std::error::Error;
 use std::ffi::c_void;
 use std::path::PathBuf;
 
-const N_THREADS: usize = 10;
+const DEFAULT_TARGET_EDGES: u64 = 50_000_000;
+const BENCHMARK_STACK_SIZE: usize = 64 * 1024;
 
 #[repr(C)]
 struct SelfWalkArgs {
     current_node: u32,
     seed: u32,
     vertices_walked: u64,
+    target_vertices: u64,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -25,72 +27,86 @@ fn main() -> Result<(), Box<dyn Error>> {
             .cloned()
             .unwrap_or_else(|| "llvm-tally/dl/examples/self-walk/self_walk.so".to_string()),
     );
-    let metacycles = parse_arg(&args, 2, 1000_u64);
-    let base_budget = parse_arg(&args, 3, 100_i64);
-    let budget_step = parse_arg(&args, 4, 100_i64);
+    let thread_count = parse_arg(&args, 2, 10_usize);
+    let budget = parse_arg(&args, 3, 100_i64);
+    let target_edges = parse_arg(&args, 4, DEFAULT_TARGET_EDGES);
+
+    if thread_count == 0 {
+        return Err("thread_count must be positive".into());
+    }
+    if budget <= 0 {
+        return Err("budget must be positive".into());
+    }
 
     let mut manager = TallyManager::new();
     let entry = manager.load_function(&workload, "run_self_walk")?;
 
-    let mut walk_args: Vec<Box<SelfWalkArgs>> = (0..N_THREADS)
+    let mut walk_args: Vec<Box<SelfWalkArgs>> = (0..thread_count)
         .map(|i| {
             Box::new(SelfWalkArgs {
                 current_node: (i as u32) & 1023,
                 seed: 0x9e37_79b9_u32 ^ (i as u32).wrapping_mul(0x85eb_ca6b),
                 vertices_walked: 0,
+                target_vertices: target_for_thread(target_edges, thread_count, i),
             })
         })
         .collect();
 
-    for (i, args) in walk_args.iter_mut().enumerate() {
-        let budget = base_budget + budget_step * i as i64;
-        manager.spawn(
+    let mut active = Vec::with_capacity(thread_count);
+    let mut active_count = 0_usize;
+    for args in walk_args.iter_mut() {
+        active.push(args.target_vertices > 0);
+        if args.target_vertices > 0 {
+            active_count += 1;
+        }
+        manager.spawn_with_stack(
             entry,
             &mut **args as *mut SelfWalkArgs as *mut c_void,
             budget,
+            BENCHMARK_STACK_SIZE,
         )?;
     }
 
-    manager.run_cycles(metacycles)?;
-    let stats = manager.stats();
-    let baseline_budget = stats
-        .first()
-        .map(|s| s.budget_per_cycle.max(1))
-        .unwrap_or(1);
-    let baseline_vertices = walk_args
-        .first()
-        .map(|args| args.vertices_walked.max(1))
-        .unwrap_or(1);
+    let mut scheduler_cycles = 0_u64;
+    while active_count > 0 {
+        scheduler_cycles += 1;
+        for id in 0..thread_count {
+            if !active[id] {
+                continue;
+            }
 
-    println!("metacycles: {metacycles}");
-    println!("threads: {N_THREADS}");
-    println!("base_budget: {base_budget}");
-    println!("budget_step: {budget_step}");
+            let state = manager.run_cycle(id)?;
+            if state == ThreadState::Returned
+                || walk_args[id].vertices_walked >= walk_args[id].target_vertices
+            {
+                active[id] = false;
+                active_count -= 1;
+            } else if state == ThreadState::Errored {
+                return Err(format!("thread {id} errored").into());
+            }
+        }
+    }
+
+    let stats = manager.stats();
+    let total_edges: u64 = walk_args.iter().map(|args| args.vertices_walked).sum();
+
+    println!("threads: {thread_count}");
+    println!("budget_per_cycle: {budget}");
+    println!("target_edges: {target_edges}");
+    println!("total_edges: {total_edges}");
+    println!("scheduler_cycles: {scheduler_cycles}");
     println!();
     println!(
-        "thread,budget_per_metacycle,total_budget,vertices_walked,vertices_per_metacycle,vertices_per_1000_cycles,budget_multiple,work_multiple,linearity_ratio,remaining_budget,charges"
+        "thread,budget_per_cycle,target_edges,vertices_walked,cycles_run,remaining_budget,charges"
     );
     for (i, stat) in stats.iter().enumerate() {
-        let budget = stat.budget_per_cycle;
-        let total_budget = budget * metacycles as i64;
-        let vertices = walk_args[i].vertices_walked;
-        let vertices_per_metacycle = vertices as f64 / metacycles.max(1) as f64;
-        let vertices_per_1000_cycles = vertices as f64 * 1000.0 / (total_budget.max(1) as f64);
-        let budget_multiple = budget as f64 / baseline_budget as f64;
-        let work_multiple = vertices as f64 / baseline_vertices as f64;
-        let linearity_ratio = work_multiple / budget_multiple.max(f64::MIN_POSITIVE);
-
         println!(
-            "{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{},{}",
+            "{},{},{},{},{},{},{}",
             stat.id,
             budget,
-            total_budget,
-            vertices,
-            vertices_per_metacycle,
-            vertices_per_1000_cycles,
-            budget_multiple,
-            work_multiple,
-            linearity_ratio,
+            walk_args[i].target_vertices,
+            walk_args[i].vertices_walked,
+            stat.cycles_run,
             stat.remaining_budget,
             stat.charges
         );
@@ -106,4 +122,10 @@ where
     args.get(index)
         .and_then(|value| value.parse::<T>().ok())
         .unwrap_or(fallback)
+}
+
+fn target_for_thread(total_edges: u64, thread_count: usize, index: usize) -> u64 {
+    let base = total_edges / thread_count as u64;
+    let remainder = total_edges % thread_count as u64;
+    base + u64::from((index as u64) < remainder)
 }

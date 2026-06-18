@@ -98,5 +98,5 @@ set_tests_properties(demo_runs PROPERTIES TIMEOUT 20)
 add_test(NAME budget_walk_runs COMMAND budget_walk 100 100 100)
 set_tests_properties(budget_walk_runs PROPERTIES TIMEOUT 20)
 
-add_test(NAME self_walk_runs COMMAND self_walk 100 100 100)
+add_test(NAME self_walk_runs COMMAND self_walk 10 100 10000)
 set_tests_properties(self_walk_runs PROPERTIES TIMEOUT 20)

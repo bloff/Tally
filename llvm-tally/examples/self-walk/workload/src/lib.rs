@@ -17,6 +17,7 @@ pub struct SelfWalkArgs {
     pub current_node: u32,
     pub seed: u32,
     pub vertices_walked: u64,
+    pub target_vertices: u64,
 }
 
 #[no_mangle]
@@ -25,8 +26,9 @@ pub unsafe extern "C" fn run_self_walk(args: *mut c_void) {
     let mut node = read_volatile(&(*input).current_node);
     let mut seed = read_volatile(&(*input).seed);
     let mut vertices = read_volatile(&(*input).vertices_walked);
+    let target = read_volatile(&(*input).target_vertices);
 
-    loop {
+    while vertices < target {
         seed = next_random(seed);
         node = synthetic_neighbor(node, seed & 3);
         vertices = vertices.wrapping_add(1);

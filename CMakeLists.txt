@@ -17,7 +17,10 @@ add_test(
             --gcc-binary "${CMAKE_CURRENT_SOURCE_DIR}/gcc-tally/bin/self_walk"
             --llvm-host "${CMAKE_CURRENT_BINARY_DIR}/llvm-tally/bin/llvm-tally-self-walk"
             --llvm-pass "$<TARGET_FILE:llvm-tally-pass>"
-            --metacycles 3000
-            --repetitions 3
+            --target-edges 10000
+            --thread-counts 1,2,5
+            --budgets 10,100
+            --repetitions 1
+            --output-dir "${CMAKE_CURRENT_BINARY_DIR}/performance-smoke"
 )
 set_tests_properties(compare_gcc_llvm_self_walk_performance PROPERTIES TIMEOUT 60)

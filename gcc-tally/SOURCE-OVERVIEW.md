@@ -123,8 +123,8 @@ folders.
 `experiments/self_walk/`
 
 - `self_walk.c`: host program for the direct GCC/C versus LLVM/Rust comparison.
-  It runs ten minithreads with linearly increasing budgets and reads vertex
-  counts from the workload argument block.
+  It runs `k` minithreads with a common per-cycle budget until their workload
+  argument blocks report the requested total edge count.
 - `instrumented/self_walk.c`: instrumented synthetic random-walk body. It uses
   the same linear-congruential generator, neighbor offsets, and state updates as
   `llvm-tally/examples/self-walk/workload/src/lib.rs`.

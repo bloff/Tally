@@ -53,9 +53,10 @@ under `results/`.
 ## Run The Self-Contained Walk Benchmark
 
 ```sh
-./bin/self_walk
+./bin/self_walk 10 100 50000000
 ```
 
 This benchmark uses an instrumented C workload that generates a synthetic graph
 arithmetically inside the measured loop. It is the GCC half of the repository's
-direct comparison with `llvm-tally/bin/llvm-tally-self-walk`.
+direct comparison with `llvm-tally/bin/llvm-tally-self-walk`. Its arguments are
+`thread_count`, `budget_per_cycle`, and `target_edges`.

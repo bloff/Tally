@@ -11,6 +11,7 @@ struct self_walk_args {
     uint32_t current_node;
     uint32_t seed;
     uint64_t vertices_walked;
+    uint64_t target_vertices;
 };
 
 #endif

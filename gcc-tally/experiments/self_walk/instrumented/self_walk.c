@@ -24,8 +24,9 @@ void run_self_walk(void* args){
     uint32_t node = input->current_node;
     uint32_t seed = input->seed;
     uint64_t vertices = input->vertices_walked;
+    uint64_t target = input->target_vertices;
 
-    while(1){
+    while(vertices < target){
         seed = next_random(seed);
         node = synthetic_neighbor(node, seed & 3u);
         vertices++;

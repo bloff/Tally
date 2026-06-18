@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Compare GCC/C and LLVM/Rust Tally self-contained random-walk throughput."""
+"""Run the GCC/C versus LLVM/Rust self-walk benchmark matrix."""
 
 import argparse
 import csv
+import html
+import math
 import os
 import statistics
 import subprocess
@@ -11,20 +13,55 @@ import time
 from pathlib import Path
 
 
+DEFAULT_THREAD_COUNTS = "1-10,20,30,40,50,100,200,300,400,500,1000"
+DEFAULT_BUDGETS = "10,20,50,100,200,500,1000"
+DEFAULT_TARGET_EDGES = 50_000_000
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Time comparable self-contained GCC/C and LLVM/Rust Tally random-walk runs."
+        description=(
+            "Run a matrix of finite self-contained random-walk benchmarks for "
+            "GCC/C Tally and LLVM/Rust Tally."
+        )
     )
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--build-root", type=Path, required=True)
     parser.add_argument("--gcc-binary", type=Path, required=True)
     parser.add_argument("--llvm-host", type=Path, required=True)
     parser.add_argument("--llvm-pass", type=Path, required=True)
-    parser.add_argument("--metacycles", type=int, default=3000)
-    parser.add_argument("--base-budget", type=int, default=100)
-    parser.add_argument("--budget-step", type=int, default=100)
-    parser.add_argument("--repetitions", type=int, default=3)
+    parser.add_argument("--target-edges", type=int, default=DEFAULT_TARGET_EDGES)
+    parser.add_argument("--thread-counts", default=DEFAULT_THREAD_COUNTS)
+    parser.add_argument("--budgets", default=DEFAULT_BUDGETS)
+    parser.add_argument("--repetitions", type=int, default=1)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Directory for CSV and HTML reports. Defaults to <repo>/results/performance-matrix.",
+    )
     return parser.parse_args()
+
+
+def parse_number_list(value):
+    numbers = []
+    for token in value.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "-" in token:
+            start_text, end_text = token.split("-", 1)
+            start = int(start_text)
+            end = int(end_text)
+            if start <= 0 or end < start:
+                raise ValueError(f"invalid range: {token}")
+            numbers.extend(range(start, end + 1))
+        else:
+            number = int(token)
+            if number <= 0:
+                raise ValueError(f"invalid positive integer: {token}")
+            numbers.append(number)
+    return sorted(dict.fromkeys(numbers))
 
 
 def run_timed(command, *, cwd, env=None):
@@ -33,43 +70,64 @@ def run_timed(command, *, cwd, env=None):
         command,
         cwd=cwd,
         env=env,
-        check=True,
+        check=False,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
     elapsed = time.perf_counter() - start
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "command failed with status "
+            f"{completed.returncode}: {' '.join(command)}\n{completed.stderr}"
+        )
     return elapsed, completed.stdout
 
 
-def parse_rows(output):
+def parse_host_output(output, expected_threads, expected_target_edges):
     lines = output.splitlines()
+    metadata = {}
+    for line in lines:
+        if line.startswith("thread,"):
+            break
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        metadata[key.strip()] = value.strip()
+
     try:
         header_index = next(i for i, line in enumerate(lines) if line.startswith("thread,"))
     except StopIteration as exc:
         raise ValueError("output did not contain a CSV header") from exc
 
     rows = list(csv.DictReader(lines[header_index:]))
-    if len(rows) != 10:
-        raise ValueError(f"expected 10 thread rows, got {len(rows)}")
+    if len(rows) != expected_threads:
+        raise ValueError(f"expected {expected_threads} thread rows, got {len(rows)}")
 
-    previous_budget = 0
-    previous_work = -1
-    total_vertices = 0
+    total_edges = 0
+    total_thread_cycles = 0
     for row in rows:
-        budget = int(row["budget_per_metacycle"])
+        target = int(row["target_edges"])
         vertices = int(row["vertices_walked"])
-        if budget <= previous_budget:
-            raise ValueError("budgets are not strictly increasing")
-        if vertices <= 0:
-            raise ValueError("thread did no graph work")
-        if previous_work >= 0 and vertices < previous_work:
-            raise ValueError("work is not nondecreasing with budget")
-        previous_budget = budget
-        previous_work = vertices
-        total_vertices += vertices
+        if vertices < target:
+            raise ValueError(f"thread {row['thread']} stopped before its target")
+        total_edges += vertices
+        total_thread_cycles += int(row["cycles_run"])
 
-    return rows, total_vertices
+    if total_edges < expected_target_edges:
+        raise ValueError(
+            f"total edges {total_edges} below requested target {expected_target_edges}"
+        )
+
+    metadata_total = int(metadata.get("total_edges", total_edges))
+    if metadata_total != total_edges:
+        raise ValueError("metadata total_edges does not match thread rows")
+
+    return {
+        "total_edges": total_edges,
+        "scheduler_cycles": int(metadata.get("scheduler_cycles", 0)),
+        "thread_cycles": total_thread_cycles,
+    }
 
 
 def build_llvm_workload(repo_root, build_root, llvm_pass):
@@ -86,12 +144,7 @@ def build_llvm_workload(repo_root, build_root, llvm_pass):
 
 def warm_gcc_workload(args):
     subprocess.run(
-        [
-            str(args.gcc_binary),
-            "1",
-            str(args.base_budget),
-            str(args.budget_step),
-        ],
+        [str(args.gcc_binary), "1", "10", "1"],
         cwd=args.repo_root / "gcc-tally",
         check=True,
         stdout=subprocess.DEVNULL,
@@ -100,89 +153,402 @@ def warm_gcc_workload(args):
     )
 
 
-def measure_gcc(args):
-    env = os.environ.copy()
-    env["TALLY_ASSUME_COMPILED"] = "1"
-    command = [
-        str(args.gcc_binary),
-        str(args.metacycles),
-        str(args.base_budget),
-        str(args.budget_step),
-    ]
-    return measure("gcc-c", command, args.repo_root / "gcc-tally", args.repetitions, env)
-
-
-def measure_llvm(args, workload_so):
-    command = [
-        str(args.llvm_host),
-        str(workload_so),
-        str(args.metacycles),
-        str(args.base_budget),
-        str(args.budget_step),
-    ]
-    return measure("llvm-rust", command, args.repo_root, args.repetitions, None)
-
-
-def measure(label, command, cwd, repetitions, env):
+def measure(label, command, cwd, repetitions, env, thread_count, target_edges):
     elapsed_values = []
-    vertex_values = []
-    last_output = ""
+    edge_values = []
+    scheduler_cycle_values = []
+    thread_cycle_values = []
+
     for _ in range(repetitions):
         elapsed, output = run_timed(command, cwd=cwd, env=env)
-        _rows, total_vertices = parse_rows(output)
+        parsed = parse_host_output(output, thread_count, target_edges)
         elapsed_values.append(elapsed)
-        vertex_values.append(total_vertices)
-        last_output = output
+        edge_values.append(parsed["total_edges"])
+        scheduler_cycle_values.append(parsed["scheduler_cycles"])
+        thread_cycle_values.append(parsed["thread_cycles"])
 
     mean_seconds = statistics.fmean(elapsed_values)
-    mean_vertices = statistics.fmean(vertex_values)
+    mean_edges = statistics.fmean(edge_values)
     return {
-        "label": label,
+        "implementation": label,
         "mean_seconds": mean_seconds,
         "stdev_seconds": statistics.stdev(elapsed_values) if len(elapsed_values) > 1 else 0.0,
-        "mean_vertices": mean_vertices,
-        "vertices_per_second": mean_vertices / mean_seconds,
-        "last_output": last_output,
+        "total_edges": mean_edges,
+        "edges_per_second": mean_edges / mean_seconds,
+        "scheduler_cycles": statistics.fmean(scheduler_cycle_values),
+        "thread_cycles": statistics.fmean(thread_cycle_values),
     }
+
+
+def run_matrix(args, thread_counts, budgets, workload_so):
+    env = os.environ.copy()
+    env["TALLY_ASSUME_COMPILED"] = "1"
+
+    detail_rows = []
+    comparison_rows = []
+    for thread_count in thread_counts:
+        for budget in budgets:
+            gcc_command = [
+                str(args.gcc_binary),
+                str(thread_count),
+                str(budget),
+                str(args.target_edges),
+            ]
+            llvm_command = [
+                str(args.llvm_host),
+                str(workload_so),
+                str(thread_count),
+                str(budget),
+                str(args.target_edges),
+            ]
+
+            gcc = measure(
+                "gcc-c",
+                gcc_command,
+                args.repo_root / "gcc-tally",
+                args.repetitions,
+                env,
+                thread_count,
+                args.target_edges,
+            )
+            llvm = measure(
+                "llvm-rust",
+                llvm_command,
+                args.repo_root,
+                args.repetitions,
+                None,
+                thread_count,
+                args.target_edges,
+            )
+
+            for result in (gcc, llvm):
+                detail_rows.append(
+                    {
+                        "threads": thread_count,
+                        "budget": budget,
+                        **result,
+                        "repetitions": args.repetitions,
+                    }
+                )
+
+            comparison_rows.append(
+                {
+                    "threads": thread_count,
+                    "budget": budget,
+                    "gcc_seconds": gcc["mean_seconds"],
+                    "llvm_seconds": llvm["mean_seconds"],
+                    "gcc_edges_per_second": gcc["edges_per_second"],
+                    "llvm_edges_per_second": llvm["edges_per_second"],
+                    "llvm_vs_gcc_throughput": llvm["edges_per_second"]
+                    / gcc["edges_per_second"],
+                    "gcc_vs_llvm_time": gcc["mean_seconds"] / llvm["mean_seconds"],
+                    "gcc_scheduler_cycles": gcc["scheduler_cycles"],
+                    "llvm_scheduler_cycles": llvm["scheduler_cycles"],
+                    "gcc_thread_cycles": gcc["thread_cycles"],
+                    "llvm_thread_cycles": llvm["thread_cycles"],
+                }
+            )
+
+            print(
+                f"k={thread_count:4d} b={budget:4d} "
+                f"gcc={gcc['edges_per_second'] / 1_000_000:8.2f}M edges/s "
+                f"llvm={llvm['edges_per_second'] / 1_000_000:8.2f}M edges/s "
+                f"ratio={comparison_rows[-1]['llvm_vs_gcc_throughput']:.3f}x",
+                flush=True,
+            )
+
+    return detail_rows, comparison_rows
+
+
+def write_csv(path, rows, fieldnames):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def write_reports(output_dir, detail_rows, comparison_rows, thread_counts, budgets, args):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    detail_csv = output_dir / "performance-matrix-detail.csv"
+    comparison_csv = output_dir / "performance-matrix-comparison.csv"
+    html_report = output_dir / "performance-matrix-report.html"
+
+    write_csv(
+        detail_csv,
+        detail_rows,
+        [
+            "threads",
+            "budget",
+            "implementation",
+            "mean_seconds",
+            "stdev_seconds",
+            "total_edges",
+            "edges_per_second",
+            "scheduler_cycles",
+            "thread_cycles",
+            "repetitions",
+        ],
+    )
+    write_csv(
+        comparison_csv,
+        comparison_rows,
+        [
+            "threads",
+            "budget",
+            "gcc_seconds",
+            "llvm_seconds",
+            "gcc_edges_per_second",
+            "llvm_edges_per_second",
+            "llvm_vs_gcc_throughput",
+            "gcc_vs_llvm_time",
+            "gcc_scheduler_cycles",
+            "llvm_scheduler_cycles",
+            "gcc_thread_cycles",
+            "llvm_thread_cycles",
+        ],
+    )
+    write_html_report(html_report, comparison_rows, thread_counts, budgets, args)
+    return detail_csv, comparison_csv, html_report
+
+
+def write_html_report(path, rows, thread_counts, budgets, args):
+    by_combo = {(int(row["threads"]), int(row["budget"])): row for row in rows}
+    max_gcc = max(row["gcc_edges_per_second"] for row in rows)
+    max_llvm = max(row["llvm_edges_per_second"] for row in rows)
+    max_abs_log_ratio = max(
+        abs(math.log2(row["llvm_vs_gcc_throughput"])) for row in rows
+    ) or 1.0
+
+    best_gcc = max(rows, key=lambda row: row["gcc_edges_per_second"])
+    best_llvm = max(rows, key=lambda row: row["llvm_edges_per_second"])
+    best_ratio = max(rows, key=lambda row: row["llvm_vs_gcc_throughput"])
+    worst_ratio = min(rows, key=lambda row: row["llvm_vs_gcc_throughput"])
+
+    html_text = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tally Performance Matrix</title>
+<style>
+:root {{
+  color-scheme: light;
+  --ink: #172033;
+  --muted: #5d667a;
+  --line: #d8deea;
+  --panel: #ffffff;
+  --page: #f4f6fa;
+}}
+body {{
+  margin: 0;
+  padding: 32px;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--page);
+  color: var(--ink);
+}}
+h1, h2 {{ margin: 0 0 12px; }}
+p {{ color: var(--muted); max-width: 980px; }}
+.summary {{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin: 22px 0 28px;
+}}
+.metric {{
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 2px rgba(20, 28, 45, 0.04);
+}}
+.metric span {{
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}}
+.metric strong {{ font-size: 22px; }}
+.section {{
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 18px;
+  margin: 18px 0;
+  overflow-x: auto;
+}}
+table {{
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: max-content;
+}}
+th, td {{
+  border: 1px solid #e1e6f0;
+  padding: 7px 8px;
+  text-align: right;
+  white-space: nowrap;
+}}
+th {{
+  background: #eef2f8;
+  color: #26344f;
+  font-weight: 650;
+  position: sticky;
+  top: 0;
+}}
+th:first-child, td:first-child {{
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: #f8fafd;
+  text-align: right;
+  font-weight: 650;
+}}
+td {{ font-variant-numeric: tabular-nums; }}
+.note {{ font-size: 13px; }}
+</style>
+</head>
+<body>
+<h1>Tally Performance Matrix</h1>
+<p>
+Single-process benchmark over a self-contained synthetic graph walk. Each cell
+runs until all minithreads collectively traverse {args.target_edges:,} edges.
+Thread count is <code>k</code>; budget is per minithread scheduler cycle.
+</p>
+<div class="summary">
+  {summary_card("Target edges", f"{args.target_edges:,}")}
+  {summary_card("Thread counts", f"{min(thread_counts)}..{max(thread_counts)} ({len(thread_counts)} values)")}
+  {summary_card("Budgets", ", ".join(str(b) for b in budgets))}
+  {summary_card("Repetitions", str(args.repetitions))}
+  {summary_card("Best GCC", describe_best(best_gcc, "gcc_edges_per_second"))}
+  {summary_card("Best LLVM", describe_best(best_llvm, "llvm_edges_per_second"))}
+  {summary_card("Max LLVM/GCC", describe_ratio(best_ratio))}
+  {summary_card("Min LLVM/GCC", describe_ratio(worst_ratio))}
+</div>
+<div class="section">
+<h2>LLVM Throughput / GCC Throughput</h2>
+<p class="note">Values above 1 mean LLVM/Rust traversed more edges per second; values below 1 mean GCC/C did.</p>
+{heatmap_table(thread_counts, budgets, by_combo, lambda row: row["llvm_vs_gcc_throughput"], lambda value: f"{value:.2f}x", lambda value: ratio_color(value, max_abs_log_ratio))}
+</div>
+<div class="section">
+<h2>GCC Throughput (M edges/s)</h2>
+{heatmap_table(thread_counts, budgets, by_combo, lambda row: row["gcc_edges_per_second"] / 1_000_000, lambda value: f"{value:.1f}", lambda value: throughput_color(value * 1_000_000, max_gcc, "#dbeafe", "#2563eb"))}
+</div>
+<div class="section">
+<h2>LLVM/Rust Throughput (M edges/s)</h2>
+{heatmap_table(thread_counts, budgets, by_combo, lambda row: row["llvm_edges_per_second"] / 1_000_000, lambda value: f"{value:.1f}", lambda value: throughput_color(value * 1_000_000, max_llvm, "#dcfce7", "#16a34a"))}
+</div>
+</body>
+</html>
+"""
+    path.write_text(html_text)
+
+
+def summary_card(label, value):
+    return f'<div class="metric"><span>{html.escape(label)}</span><strong>{html.escape(value)}</strong></div>'
+
+
+def describe_best(row, field):
+    return (
+        f"{row[field] / 1_000_000:.1f}M/s "
+        f"at k={int(row['threads'])}, b={int(row['budget'])}"
+    )
+
+
+def describe_ratio(row):
+    return f"{row['llvm_vs_gcc_throughput']:.2f}x at k={int(row['threads'])}, b={int(row['budget'])}"
+
+
+def heatmap_table(thread_counts, budgets, by_combo, value_fn, label_fn, color_fn):
+    output = ['<table><thead><tr><th>k \\ b</th>']
+    output.extend(f"<th>{budget}</th>" for budget in budgets)
+    output.append("</tr></thead><tbody>")
+    for thread_count in thread_counts:
+        output.append(f"<tr><td>{thread_count}</td>")
+        for budget in budgets:
+            row = by_combo[(thread_count, budget)]
+            value = value_fn(row)
+            tooltip = (
+                f"k={thread_count}, b={budget}; "
+                f"GCC {row['gcc_edges_per_second'] / 1_000_000:.2f}M/s; "
+                f"LLVM {row['llvm_edges_per_second'] / 1_000_000:.2f}M/s; "
+                f"ratio {row['llvm_vs_gcc_throughput']:.3f}x"
+            )
+            output.append(
+                f'<td title="{html.escape(tooltip)}" style="background:{color_fn(value)}">'
+                f"{html.escape(label_fn(value))}</td>"
+            )
+        output.append("</tr>")
+    output.append("</tbody></table>")
+    return "".join(output)
+
+
+def throughput_color(value, max_value, low, high):
+    scale = 0.0 if max_value <= 0 else min(1.0, max(0.0, value / max_value))
+    scale = math.sqrt(scale)
+    return interpolate_hex(low, high, scale)
+
+
+def ratio_color(value, max_abs_log_ratio):
+    log_ratio = math.log2(value)
+    scale = min(1.0, abs(log_ratio) / max_abs_log_ratio)
+    if log_ratio >= 0:
+        return interpolate_hex("#ffffff", "#14b8a6", scale)
+    return interpolate_hex("#ffffff", "#f97316", scale)
+
+
+def interpolate_hex(low, high, scale):
+    low_rgb = tuple(int(low[i : i + 2], 16) for i in (1, 3, 5))
+    high_rgb = tuple(int(high[i : i + 2], 16) for i in (1, 3, 5))
+    mixed = tuple(round(a + (b - a) * scale) for a, b in zip(low_rgb, high_rgb))
+    return f"#{mixed[0]:02x}{mixed[1]:02x}{mixed[2]:02x}"
+
+
+def print_comparison_csv(rows):
+    fieldnames = [
+        "threads",
+        "budget",
+        "gcc_seconds",
+        "llvm_seconds",
+        "gcc_edges_per_second",
+        "llvm_edges_per_second",
+        "llvm_vs_gcc_throughput",
+    ]
+    writer = csv.DictWriter(sys.stdout, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(rows)
 
 
 def main():
     args = parse_args()
     if args.repetitions <= 0:
         raise ValueError("--repetitions must be positive")
+    if args.target_edges <= 0:
+        raise ValueError("--target-edges must be positive")
+
+    args.repo_root = args.repo_root.resolve()
+    args.build_root = args.build_root.resolve()
+    args.gcc_binary = args.gcc_binary.resolve()
+    args.llvm_host = args.llvm_host.resolve()
+    args.llvm_pass = args.llvm_pass.resolve()
+
+    thread_counts = parse_number_list(args.thread_counts)
+    budgets = parse_number_list(args.budgets)
+    output_dir = (args.output_dir or args.repo_root / "results" / "performance-matrix").resolve()
 
     workload_so = build_llvm_workload(args.repo_root, args.build_root, args.llvm_pass)
     warm_gcc_workload(args)
-
-    gcc = measure_gcc(args)
-    llvm = measure_llvm(args, workload_so)
-
-    fastest_seconds = min(gcc["mean_seconds"], llvm["mean_seconds"])
-    fastest_throughput = max(gcc["vertices_per_second"], llvm["vertices_per_second"])
-
-    print(
-        "implementation,mean_seconds,stdev_seconds,mean_vertices,"
-        "vertices_per_second,relative_time,relative_throughput"
+    detail_rows, comparison_rows = run_matrix(args, thread_counts, budgets, workload_so)
+    detail_csv, comparison_csv, html_report = write_reports(
+        output_dir, detail_rows, comparison_rows, thread_counts, budgets, args
     )
-    for result in (gcc, llvm):
-        print(
-            f"{result['label']},"
-            f"{result['mean_seconds']:.6f},"
-            f"{result['stdev_seconds']:.6f},"
-            f"{result['mean_vertices']:.2f},"
-            f"{result['vertices_per_second']:.2f},"
-            f"{result['mean_seconds'] / fastest_seconds:.3f},"
-            f"{result['vertices_per_second'] / fastest_throughput:.3f}"
-        )
 
-    if gcc["vertices_per_second"] >= llvm["vertices_per_second"]:
-        winner = "gcc-c"
-        ratio = gcc["vertices_per_second"] / llvm["vertices_per_second"]
-    else:
-        winner = "llvm-rust"
-        ratio = llvm["vertices_per_second"] / gcc["vertices_per_second"]
-    print(f"winner_by_throughput,{winner},{ratio:.3f}x")
-
+    print()
+    print_comparison_csv(comparison_rows)
+    print()
+    print(f"wrote_detail_csv,{detail_csv}")
+    print(f"wrote_comparison_csv,{comparison_csv}")
+    print(f"wrote_html_report,{html_report}")
     return 0
 
 

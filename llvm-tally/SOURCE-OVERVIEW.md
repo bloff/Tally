@@ -44,8 +44,10 @@ more expensive than the original register-based GCC instrumentation.
 The repository-level comparison uses `examples/self-walk`, not the graph ABI
 demo. Both the C and Rust workloads use the same linear-congruential random
 number generator, the same four synthetic neighbor offsets, and the same
-per-iteration state updates. That keeps graph work inside instrumented code in
-both languages, while still allowing each implementation to use its own budget
+per-iteration state updates. Each benchmark run gives `k` minithreads a common
+per-cycle budget and stops when the workload-owned counters reach the requested
+total edge count. That keeps graph work inside instrumented code in both
+languages, while still allowing each implementation to use its own budget
 storage strategy.
 
 ## Limitations
