@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let graph_path = PathBuf::from(
         args.get(2)
             .cloned()
-            .unwrap_or_else(|| "gcc-tally/data/graph.txt".to_string()),
+            .unwrap_or_else(|| "llvm-tally/data/graph.txt".to_string()),
     );
     let metacycles = parse_arg(&args, 3, 1000_u64);
     let base_budget = parse_arg(&args, 4, 100_i64);

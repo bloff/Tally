@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Run native virtual-budget calibration fairness experiments for both runtimes."""
+"""Run native LLVM virtual-budget calibration fairness experiments."""
 
 import argparse
 import csv
 import html
 import math
-import os
 import statistics
 import subprocess
 import sys
@@ -15,14 +14,13 @@ from pathlib import Path
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Run native C and Rust virtual-budget fairness experiments. Each "
-            "runtime calibrates itself, then runs random virtual budgets and "
+            "Run native LLVM/Rust virtual-budget fairness experiments. Each "
+            "run calibrates the Rust runtime, then uses random virtual budgets and "
             "reports how observed work shares compare to activation-corrected "
             "budget shares."
         )
     )
     parser.add_argument("--repo-root", type=Path, required=True)
-    parser.add_argument("--gcc-binary", type=Path, required=True)
     parser.add_argument("--llvm-binary", type=Path, required=True)
     parser.add_argument("--thread-count", type=int, default=50_000)
     parser.add_argument("--rounds", type=int, default=3)
@@ -32,7 +30,6 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=0x5EED1234)
     parser.add_argument("--calibration-seconds", type=float, default=30.0)
     parser.add_argument("--calibration-work", type=int, default=200_000)
-    parser.add_argument("--gcc-stack-words", type=int, default=1024)
     parser.add_argument("--llvm-stack-bytes", type=int, default=16 * 1024)
     parser.add_argument("--adaptive", action="store_true")
     parser.add_argument(
@@ -78,9 +75,6 @@ def run_command(command, *, cwd, env=None):
 
 
 def run_native_hosts(args):
-    gcc_env = os.environ.copy()
-    gcc_env["TALLY_ASSUME_COMPILED"] = "1"
-
     common = [
         str(args.thread_count),
         str(args.rounds),
@@ -93,18 +87,6 @@ def run_native_hosts(args):
     ]
 
     runs = [
-        (
-            "gcc-c",
-            [
-                str(args.gcc_binary),
-                *common,
-                str(args.gcc_stack_words),
-                "1" if args.adaptive else "0",
-                args.budget_shapes,
-            ],
-            args.repo_root / "gcc-tally",
-            gcc_env,
-        ),
         (
             "llvm-rust",
             [
@@ -499,7 +481,7 @@ td:first-child, th:first-child {{ text-align: left; }}
 <body>
 <h1>Tally Native Virtual-Budget Fairness</h1>
 <p>
-Each runtime calibrated itself natively, then ran {args.thread_count:,}
+The Rust runtime calibrated itself natively, then ran {args.thread_count:,}
 minithreads with virtual budgets summing to {args.total_virtual_budget:g}.
 Expected shares use activation-corrected virtual budget seconds:
 <code>B_i = max(0, v_i * round_seconds - activations_i * activation_cost)</code>.
@@ -617,7 +599,6 @@ def print_summary(rows):
 def main():
     args = parse_args()
     args.repo_root = args.repo_root.resolve()
-    args.gcc_binary = args.gcc_binary.resolve()
     args.llvm_binary = args.llvm_binary.resolve()
     output_dir = (
         args.output_dir

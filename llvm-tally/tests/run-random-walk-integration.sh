@@ -9,7 +9,7 @@ HOST_BINARY="$4"
 REPO_ROOT="$(cd "${LLVM_TALLY_DIR}/.." && pwd)"
 
 WORKLOAD_SO="$("${LLVM_TALLY_DIR}/scripts/build-rust-workload.sh" examples/random-walk "${BUILD_DIR}" "${PASS_PLUGIN}")"
-OUTPUT="$("${HOST_BINARY}" "${WORKLOAD_SO}" "${REPO_ROOT}/gcc-tally/data/graph.txt" 300 100 100)"
+OUTPUT="$("${HOST_BINARY}" "${WORKLOAD_SO}" "${LLVM_TALLY_DIR}/data/graph.txt" 300 100 100)"
 
 echo "${OUTPUT}"
 

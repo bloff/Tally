@@ -1,7 +1,6 @@
 /*
- * Controlled no_std self-contained random walk for llvm-tally. It mirrors the
- * C self_walk benchmark and performs graph generation entirely inside the
- * instrumented workload.
+ * Controlled no_std self-contained random walk for llvm-tally. It performs
+ * graph generation entirely inside the instrumented workload.
  */
 #![no_std]
 

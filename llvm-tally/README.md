@@ -5,9 +5,8 @@ workload to LLVM bitcode, instruments that bitcode with an LLVM FunctionPass,
 links the result as a shared object, and runs it inside a Rust minithread
 runtime.
 
-This v1 deliberately uses a memory-backed per-minithread budget. That is slower
-than the GCC implementation's reserved-register budget, but it keeps the first
-Rust experiment correct and easy to inspect.
+The runtime deliberately uses a memory-backed per-minithread budget. That keeps
+the Rust experiment independent from rustc backend changes and easy to inspect.
 
 ## Build And Test
 
@@ -39,9 +38,9 @@ llvm-tally/scripts/build-rust-workload.sh examples/self-walk /tmp/tally-llvm-bui
 ```
 
 This variant keeps the graph algorithm inside the instrumented Rust workload so
-it can be compared more directly with `gcc-tally/bin/self_walk`. Its arguments
-after the shared object path are `thread_count`, `budget_per_cycle`, and
-`target_edges`.
+performance measurements avoid host graph calls in the measured loop. Its
+arguments after the shared object path are `thread_count`, `budget_per_cycle`,
+and `target_edges`.
 
 ## Memory Limits
 

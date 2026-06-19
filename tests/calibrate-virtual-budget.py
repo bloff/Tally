@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Calibrate virtual-budget constants for GCC Tally and LLVM Tally."""
+"""Calibrate virtual-budget constants for LLVM Tally."""
 
 import argparse
 import csv
@@ -7,7 +7,6 @@ import datetime as dt
 import html
 import json
 import math
-import os
 import statistics
 import subprocess
 import sys
@@ -23,12 +22,11 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description=(
             "Run self-contained random-walk measurements and fit a linear "
-            "virtual-budget calibration for both Tally runtimes."
+            "virtual-budget calibration for LLVM Tally."
         )
     )
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--build-root", type=Path, required=True)
-    parser.add_argument("--gcc-binary", type=Path, required=True)
     parser.add_argument("--llvm-host", type=Path, required=True)
     parser.add_argument("--llvm-pass", type=Path, required=True)
     parser.add_argument("--thread-counts", default=DEFAULT_THREAD_COUNTS)
@@ -43,7 +41,6 @@ def parse_args():
         ),
     )
     parser.add_argument("--repetitions", type=int, default=3)
-    parser.add_argument("--gcc-stack-words", type=int, default=1024)
     parser.add_argument("--llvm-stack-bytes", type=int, default=64 * 1024)
     parser.add_argument(
         "--output-dir",
@@ -124,15 +121,6 @@ def build_llvm_workload(repo_root, build_root, llvm_pass):
     return Path(output.strip().splitlines()[-1])
 
 
-def warm_gcc_workload(args):
-    env = os.environ.copy()
-    run_command(
-        [str(args.gcc_binary), "1", "10", "1", str(args.gcc_stack_words), "1"],
-        cwd=args.repo_root / "gcc-tally",
-        env=env,
-    )
-
-
 def measure(command, *, cwd, env, repetitions):
     samples = []
     for _ in range(repetitions):
@@ -167,8 +155,6 @@ def measure(command, *, cwd, env, repetitions):
 
 
 def run_measurements(args, thread_counts, budgets, target_edge_counts, workload_so):
-    gcc_env = os.environ.copy()
-    gcc_env["TALLY_ASSUME_COMPILED"] = "1"
     rows = []
 
     for target_edges in target_edge_counts:
@@ -181,29 +167,15 @@ def run_measurements(args, thread_counts, budgets, target_edge_counts, workload_
                         budget,
                         target_edges,
                         workload_so,
-                        gcc_env,
                     )
                 )
 
     return rows
 
 
-def run_one_combination(args, thread_count, budget, target_edges, workload_so, gcc_env):
+def run_one_combination(args, thread_count, budget, target_edges, workload_so):
     rows = []
     commands = [
-        (
-            "gcc-c",
-            [
-                str(args.gcc_binary),
-                str(thread_count),
-                str(budget),
-                str(target_edges),
-                str(args.gcc_stack_words),
-                "1",
-            ],
-            args.repo_root / "gcc-tally",
-            gcc_env,
-        ),
         (
             "llvm-rust",
             [
@@ -520,9 +492,8 @@ code {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 <h1>Tally Virtual Budget Calibration</h1>
 <p>
 This report fits a first-order model from the self-contained random-walk
-benchmark. The generated JSON constants can be passed to the C and Rust
-virtual-budget APIs to translate a virtual CPU share into implementation-local
-budget units.
+benchmark. The generated JSON constants can be passed to the Rust
+virtual-budget API to translate a virtual CPU share into internal budget units.
 </p>
 <section>
 <h2>Run Shape</h2>
@@ -593,7 +564,6 @@ def main():
 
     args.repo_root = args.repo_root.resolve()
     args.build_root = args.build_root.resolve()
-    args.gcc_binary = args.gcc_binary.resolve()
     args.llvm_host = args.llvm_host.resolve()
     args.llvm_pass = args.llvm_pass.resolve()
 
@@ -609,7 +579,6 @@ def main():
     ).resolve()
 
     workload_so = build_llvm_workload(args.repo_root, args.build_root, args.llvm_pass)
-    warm_gcc_workload(args)
     rows = run_measurements(args, thread_counts, budgets, target_edge_counts, workload_so)
     calibrations = fit_calibration(rows)
     detail_csv, json_path, html_path = write_outputs(
