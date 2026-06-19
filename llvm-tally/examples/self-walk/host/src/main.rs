@@ -72,6 +72,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut scheduler_cycles = 0_u64;
     let mut thread_cycles = 0_u64;
+    let mut budget_units_consumed = 0_u64;
     let run_start = Instant::now();
     while active_count > 0 {
         scheduler_cycles += 1;
@@ -80,7 +81,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 continue;
             }
 
+            let before = manager.stats_for_thread(id)?;
             let state = manager.run_cycle(id)?;
+            let after = manager.stats_for_thread(id)?;
+            let charged_budget = (budget + before.remaining_budget - after.remaining_budget).max(0);
+            budget_units_consumed = budget_units_consumed.saturating_add(charged_budget as u64);
             thread_cycles += 1;
             if state == ThreadState::Returned
                 || walk_args[id].vertices_walked >= walk_args[id].target_vertices
@@ -104,6 +109,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("run_seconds: {run_seconds:.9}");
     println!("scheduler_cycles: {scheduler_cycles}");
     println!("thread_cycles: {thread_cycles}");
+    println!("budget_units_consumed: {budget_units_consumed}");
     println!("stack_bytes: {stack_size}");
     println!("summary_only: {}", u8::from(summary_only));
     println!();

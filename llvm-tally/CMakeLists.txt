@@ -67,7 +67,7 @@ add_test(
     NAME llvm_runtime_tests
     COMMAND "${CMAKE_COMMAND}" -E env
             CARGO_TARGET_DIR="${LLVM_TALLY_CARGO_TARGET_DIR}"
-            cargo test --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/runtime/Cargo.toml"
+            cargo test --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/runtime/Cargo.toml" -- --test-threads=1
 )
 
 add_test(

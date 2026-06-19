@@ -39,6 +39,7 @@ string(STRIP "${GCCPLUGINS_INCLUDE_DIR}" GCCPLUGINS_INCLUDE_DIR)
 add_library(minithread STATIC
     src/tally/runtime/minithread.c
     src/tally/runtime/cycles_probe.c
+    src/tally/runtime/virtual_budget.c
 )
 set_target_properties(minithread PROPERTIES COMPILE_FLAGS "-save-temps -fPIC -no-pie -rdynamic -Wl,--export-dynamic")
 set_target_properties(minithread PROPERTIES LINK_FLAGS "-Wl,--export-dynamic")
@@ -91,6 +92,12 @@ target_include_directories(test_graph_load PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/
 target_compile_definitions(test_graph_load PRIVATE TALLY_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 set_target_properties(test_graph_load PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
 add_test(NAME graph_load COMMAND test_graph_load)
+
+add_executable(test_virtual_budget tests/test_virtual_budget.c)
+target_include_directories(test_virtual_budget PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(test_virtual_budget minithread dl Threads::Threads)
+set_target_properties(test_virtual_budget PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
+add_test(NAME virtual_budget_math COMMAND test_virtual_budget)
 
 add_test(NAME demo_runs COMMAND main)
 set_tests_properties(demo_runs PROPERTIES TIMEOUT 20)

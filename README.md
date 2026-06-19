@@ -100,3 +100,49 @@ is `--stack-budget-gib 16`, which gives roughly 16 KiB of stack per minithread
 at `k = 1000000`.
 
 Outputs are written under `results/million-thread-stress/`.
+
+## Virtual-Budget Calibration
+
+The internal budget units are deliberately implementation-local: GCC/C counts
+lower-level inserted charges using a reserved register, while LLVM/Rust counts
+LLVM basic-block costs through a memory-backed runtime value. To map both of
+those onto a user-facing "fraction of one CPU core" budget, use the calibration
+harness:
+
+```sh
+python3 tests/calibrate-virtual-budget.py \
+  --repo-root . \
+  --build-root /tmp/tally-all-build \
+  --gcc-binary gcc-tally/bin/self_walk \
+  --llvm-host /tmp/tally-all-build/llvm-tally/bin/llvm-tally-self-walk \
+  --llvm-pass /tmp/tally-all-build/llvm-tally/llvm-tally-pass.so \
+  --target-edge-counts 250000,1000000,5000000
+```
+
+The fitted model is:
+
+```text
+run_seconds ~= seconds_per_budget_unit * budget_units_consumed
+            + seconds_per_activation * thread_cycles
+            + seconds_per_scheduler_round * scheduler_cycles
+            + intercept_seconds
+```
+
+The script writes:
+
+- `results/virtual-budget-calibration/virtual-budget-calibration-detail.csv`
+- `results/virtual-budget-calibration/virtual-budget-calibration.json`
+- `results/virtual-budget-calibration/virtual-budget-calibration-report.html`
+
+The JSON constants are meant to be copied into runtime configuration, not hard
+coded globally. The C side exposes this mapping in
+`gcc-tally/include/virtual_budget.h` through `TallyVirtualCalibration` and
+`TallyVirtualThread`. The Rust side exposes the same concepts as
+`VirtualCalibration` and `VirtualThread` in the `llvm_tally_runtime` crate.
+
+In both APIs, a scheduler periodically grants each minithread
+`elapsed_wall_seconds * cpu_share` virtual CPU seconds. The helper then converts
+that accumulated credit into an internal budget only when the thread can afford
+the calibrated activation/context-switch cost plus at least one usable slice.
+Negative credit is allowed, which lets overshoot at instrumentation boundaries
+carry forward as debt.

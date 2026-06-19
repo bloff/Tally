@@ -60,6 +60,16 @@ static double elapsed_seconds(struct timespec start, struct timespec end){
     return (double)(end.tv_sec - start.tv_sec) + ((double)(end.tv_nsec - start.tv_nsec) / 1000000000.0);
 }
 
+static uint64_t charged_budget_for_cycle(Minithread thread, int64_t budget){
+    int64_t charged = budget;
+    if(thread->state == MINITHREAD_FORCE_YIELD){
+        charged = budget - thread->cycles_left;
+    }else if(thread->cycles_left > 0 && thread->cycles_left < budget){
+        charged = budget - thread->cycles_left;
+    }
+    return charged > 0 ? (uint64_t)charged : 0;
+}
+
 int main(int argc, char* argv[]){
     size_t thread_count = 10;
     int64_t budget = 100;
@@ -113,6 +123,7 @@ int main(int argc, char* argv[]){
 
     uint64_t scheduler_cycles = 0;
     uint64_t thread_cycles = 0;
+    uint64_t budget_units_consumed = 0;
     struct timespec run_start;
     struct timespec run_end;
     clock_gettime(CLOCK_MONOTONIC, &run_start);
@@ -125,6 +136,7 @@ int main(int argc, char* argv[]){
 
             minithread_run_cycle(threads[i]);
             thread_cycles++;
+            budget_units_consumed += charged_budget_for_cycle(threads[i], budget);
             if(!summary_only){
                 cycles_run[i]++;
             }
@@ -151,6 +163,7 @@ int main(int argc, char* argv[]){
     printf("run_seconds: %.9f\n", elapsed_seconds(run_start, run_end));
     printf("scheduler_cycles: %" PRIu64 "\n", scheduler_cycles);
     printf("thread_cycles: %" PRIu64 "\n", thread_cycles);
+    printf("budget_units_consumed: %" PRIu64 "\n", budget_units_consumed);
     printf("stack_words: %zu\n", stack_words);
     printf("stack_bytes: %zu\n", stack_words * sizeof(void*));
     printf("summary_only: %d\n", summary_only ? 1 : 0);
