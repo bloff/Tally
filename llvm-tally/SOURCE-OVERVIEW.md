@@ -11,7 +11,9 @@ Rust runtime, without changing rustc itself.
 - `pass/`: LLVM new-pass-manager plugin. The `tally-instrument` FunctionPass
   inserts `__tally_charge(i64 cost)` calls into eligible basic blocks.
 - `runtime/`: Rust minithread manager, stackful context switching, dynamic
-  loading, and the exported `__tally_charge` C ABI.
+  loading, CPU budget accounting, memory-limit accounting, and exported C ABI
+  hooks such as `__tally_charge`, `__tally_alloc`, `__tally_dealloc`, and
+  `__tally_realloc`.
 - `examples/random-walk/workload/`: controlled `#![no_std]` Rust workload that
   calls host graph functions and runs forever.
 - `examples/random-walk/host/`: Rust host executable that loads the instrumented
@@ -22,6 +24,11 @@ Rust runtime, without changing rustc itself.
 - `examples/self-walk/host/`: Rust host executable for the self-contained
   benchmark; it reports the workload-owned vertex counters after fixed
   scheduler metacycles.
+- `examples/memory-recovery/workload/`: controlled `#![no_std]` workload that
+  intentionally exhausts heap, recursive stack, and large-frame stack limits.
+- `examples/memory-recovery/host/`: Rust host executable that verifies memory
+  failures mark only the offending minithread `Errored` and the scheduler can
+  continue running healthy minithreads.
 - `scripts/`: rustc/opt/clang pipeline for turning workload Rust into an
   instrumented shared object.
 - `tests/`: pass fixtures and integration scripts.
@@ -38,6 +45,23 @@ effective budget.
 Unlike `gcc-tally`, this prototype does not reserve `r15`. That keeps the Rust
 path independent from rustc backend changes, but it means the budget check is
 more expensive than the original register-based GCC instrumentation.
+
+## Memory Accounting Model
+
+`spawn_with_limits` creates minithreads with separate stack and heap limits.
+Stacks are anonymous `mmap` regions with protected guard pages. Cooperative
+checks in `__tally_charge` read the current stack pointer, update current and
+peak stack usage, and convert soft overflow into `ThreadState::Errored`.
+Guard-page `SIGSEGV` faults from the currently running minithread are handled on
+an alternate signal stack, recognized as stack faults, and switched back to the
+scheduler instead of terminating the host process.
+
+The heap path is currently explicit rather than transparent. Instrumented
+workloads can call `__tally_alloc`, `__tally_dealloc`, and `__tally_realloc` to
+allocate from a simple per-minithread bump heap. Heap exhaustion records a
+`HeapLimit` error and yields to the scheduler. This does not yet cover ordinary
+Rust `std` allocation paths such as `Vec`, `Box`, or `String`; those require the
+future global-allocator or instrumented-standard-library phase.
 
 ## Performance Comparison Workload
 
@@ -56,5 +80,7 @@ storage strategy.
 - External pipeline only: `rustc --emit=llvm-bc`, then `opt`, then `clang`.
 - The v1 workload is a controlled `#![no_std]` crate with `panic=abort`.
 - Dependencies and the Rust standard library are not instrumented.
+- The per-minithread heap is a bump allocator; freed blocks are accounted for
+  but not reused yet.
 - The pass uses a simple LLVM IR instruction cost model rather than a calibrated
   machine-instruction model.
