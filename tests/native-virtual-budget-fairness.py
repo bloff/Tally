@@ -36,6 +36,14 @@ def parse_args():
     parser.add_argument("--llvm-stack-bytes", type=int, default=16 * 1024)
     parser.add_argument("--adaptive", action="store_true")
     parser.add_argument(
+        "--budget-shapes",
+        default="random-log,tiered-50-35-15",
+        help=(
+            "Comma-separated budget distributions. Defaults to the previous "
+            "random log-uniform shape plus a tiered 50/35/15 budget split."
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
@@ -92,6 +100,7 @@ def run_native_hosts(args):
                 *common,
                 str(args.gcc_stack_words),
                 "1" if args.adaptive else "0",
+                args.budget_shapes,
             ],
             args.repo_root / "gcc-tally",
             gcc_env,
@@ -103,6 +112,7 @@ def run_native_hosts(args):
                 *common,
                 str(args.llvm_stack_bytes),
                 "1" if args.adaptive else "0",
+                args.budget_shapes,
             ],
             args.repo_root,
             None,
@@ -122,7 +132,7 @@ def parse_native_output(output):
     metadata = {}
     header_index = None
     for index, line in enumerate(lines):
-        if line.startswith("thread,"):
+        if line.startswith("thread,") or line.startswith("scenario,"):
             header_index = index
             break
         if ":" in line:
@@ -135,6 +145,8 @@ def parse_native_output(output):
     rows = list(csv.DictReader(lines[header_index:]))
     for row in rows:
         row["implementation"] = metadata["implementation"]
+        row["scenario"] = row.get("scenario") or metadata.get("budget_shapes", "random-log")
+        row["budget_class"] = row.get("budget_class") or "unknown"
         row["thread"] = int(row["thread"])
         row["round"] = int(row["round"])
         row["virtual_budget"] = float(row["virtual_budget"])
@@ -152,21 +164,26 @@ def summarize(parsed_outputs):
     all_rows = []
     summary_rows = []
     bucket_rows = []
+    class_rows = []
 
     for metadata, rows in parsed_outputs:
         all_rows.extend(rows)
         implementation = metadata["implementation"]
-        rounds = sorted({row["round"] for row in rows})
-        for round_index in rounds:
-            round_rows = [row for row in rows if row["round"] == round_index]
-            summary = summarize_round(implementation, round_index, round_rows)
-            summary_rows.append(summary)
-            bucket_rows.extend(summarize_buckets(summary, round_rows))
+        scenarios = sorted({row["scenario"] for row in rows})
+        for scenario in scenarios:
+            scenario_rows = [row for row in rows if row["scenario"] == scenario]
+            rounds = sorted({row["round"] for row in scenario_rows})
+            for round_index in rounds:
+                round_rows = [row for row in scenario_rows if row["round"] == round_index]
+                summary = summarize_round(implementation, scenario, round_index, round_rows)
+                summary_rows.append(summary)
+                bucket_rows.extend(summarize_buckets(summary, round_rows))
+                class_rows.extend(summarize_classes(summary, round_rows))
 
-    return all_rows, summary_rows, bucket_rows
+    return all_rows, summary_rows, bucket_rows, class_rows
 
 
-def summarize_round(implementation, round_index, rows):
+def summarize_round(implementation, scenario, round_index, rows):
     total_work = sum(row["work"] for row in rows)
     total_expected = sum(row["activation_corrected_budget_seconds"] for row in rows)
     total_activations = sum(row["activations"] for row in rows)
@@ -202,6 +219,7 @@ def summarize_round(implementation, round_index, rows):
 
     return {
         "implementation": implementation,
+        "scenario": scenario,
         "round": round_index,
         "threads": len(rows),
         "round_seconds": round_seconds,
@@ -236,6 +254,7 @@ def summarize_buckets(summary, rows, bucket_count=10):
         buckets.append(
             {
                 "implementation": summary["implementation"],
+                "scenario": summary["scenario"],
                 "round": summary["round"],
                 "bucket": bucket,
                 "threads": len(bucket_rows),
@@ -251,6 +270,41 @@ def summarize_buckets(summary, rows, bucket_count=10):
     return buckets
 
 
+def summarize_classes(summary, rows):
+    total_work = sum(row["work"] for row in rows)
+    total_expected = sum(row["activation_corrected_budget_seconds"] for row in rows)
+    class_rows = []
+    for budget_class in sorted({row["budget_class"] for row in rows}, key=budget_class_sort_key):
+        members = [row for row in rows if row["budget_class"] == budget_class]
+        actual_share = sum(row["work"] for row in members) / total_work
+        expected_share = (
+            sum(row["activation_corrected_budget_seconds"] for row in members) / total_expected
+        )
+        class_rows.append(
+            {
+                "implementation": summary["implementation"],
+                "scenario": summary["scenario"],
+                "round": summary["round"],
+                "budget_class": budget_class,
+                "threads": len(members),
+                "min_virtual_budget": min(row["virtual_budget"] for row in members),
+                "mean_virtual_budget": statistics.fmean(row["virtual_budget"] for row in members),
+                "max_virtual_budget": max(row["virtual_budget"] for row in members),
+                "actual_share": actual_share,
+                "expected_share": expected_share,
+                "actual_over_expected": actual_share / expected_share
+                if expected_share > 0
+                else float("nan"),
+            }
+        )
+    return class_rows
+
+
+def budget_class_sort_key(budget_class):
+    order = {"random": 0, "small": 1, "medium": 2, "large": 3}
+    return (order.get(budget_class, 99), budget_class)
+
+
 def pearson(xs, ys):
     mean_x = statistics.fmean(xs)
     mean_y = statistics.fmean(ys)
@@ -261,11 +315,12 @@ def pearson(xs, ys):
     return numerator / denominator if denominator > 0.0 else 0.0
 
 
-def write_outputs(output_dir, all_rows, summary_rows, bucket_rows, args):
+def write_outputs(output_dir, all_rows, summary_rows, bucket_rows, class_rows, args):
     output_dir.mkdir(parents=True, exist_ok=True)
     detail_csv = output_dir / "native-virtual-budget-fairness-detail.csv"
     summary_csv = output_dir / "native-virtual-budget-fairness-summary.csv"
     bucket_csv = output_dir / "native-virtual-budget-fairness-buckets.csv"
+    class_csv = output_dir / "native-virtual-budget-fairness-classes.csv"
     html_report = output_dir / "native-virtual-budget-fairness-report.html"
 
     write_csv(
@@ -273,8 +328,10 @@ def write_outputs(output_dir, all_rows, summary_rows, bucket_rows, args):
         all_rows,
         [
             "implementation",
+            "scenario",
             "round",
             "thread",
+            "budget_class",
             "virtual_budget",
             "activation_corrected_budget_seconds",
             "work",
@@ -291,6 +348,7 @@ def write_outputs(output_dir, all_rows, summary_rows, bucket_rows, args):
         summary_rows,
         [
             "implementation",
+            "scenario",
             "round",
             "threads",
             "round_seconds",
@@ -310,6 +368,7 @@ def write_outputs(output_dir, all_rows, summary_rows, bucket_rows, args):
         bucket_rows,
         [
             "implementation",
+            "scenario",
             "round",
             "bucket",
             "threads",
@@ -320,8 +379,25 @@ def write_outputs(output_dir, all_rows, summary_rows, bucket_rows, args):
             "actual_over_expected",
         ],
     )
-    write_html(html_report, summary_rows, bucket_rows, args)
-    return detail_csv, summary_csv, bucket_csv, html_report
+    write_csv(
+        class_csv,
+        class_rows,
+        [
+            "implementation",
+            "scenario",
+            "round",
+            "budget_class",
+            "threads",
+            "min_virtual_budget",
+            "mean_virtual_budget",
+            "max_virtual_budget",
+            "actual_share",
+            "expected_share",
+            "actual_over_expected",
+        ],
+    )
+    write_html(html_report, summary_rows, bucket_rows, class_rows, args)
+    return detail_csv, summary_csv, bucket_csv, class_csv, html_report
 
 
 def write_csv(path, rows, fieldnames):
@@ -331,9 +407,10 @@ def write_csv(path, rows, fieldnames):
         writer.writerows(rows)
 
 
-def write_html(path, summary_rows, bucket_rows, args):
+def write_html(path, summary_rows, bucket_rows, class_rows, args):
     rows_html = "\n".join(
         f"<tr><td>{html.escape(row['implementation'])}</td>"
+        f"<td>{html.escape(row['scenario'])}</td>"
         f"<td>{row['round']}</td>"
         f"<td>{row['round_seconds']:.3f}</td>"
         f"<td>{row['total_work']:,}</td>"
@@ -343,9 +420,15 @@ def write_html(path, summary_rows, bucket_rows, args):
         for row in summary_rows
     )
     bucket_sections = "\n".join(
-        bucket_table(implementation, round_index, bucket_rows)
-        for implementation, round_index in sorted(
-            {(row["implementation"], row["round"]) for row in bucket_rows}
+        bucket_table(implementation, scenario, round_index, bucket_rows)
+        for implementation, scenario, round_index in sorted(
+            {(row["implementation"], row["scenario"], row["round"]) for row in bucket_rows}
+        )
+    )
+    class_sections = "\n".join(
+        class_table(implementation, scenario, round_index, class_rows)
+        for implementation, scenario, round_index in sorted(
+            {(row["implementation"], row["scenario"], row["round"]) for row in class_rows}
         )
     )
     path.write_text(
@@ -417,9 +500,11 @@ td:first-child, th:first-child {{ text-align: left; }}
 <h1>Tally Native Virtual-Budget Fairness</h1>
 <p>
 Each runtime calibrated itself natively, then ran {args.thread_count:,}
-minithreads with random virtual budgets summing to {args.total_virtual_budget:g}.
+minithreads with virtual budgets summing to {args.total_virtual_budget:g}.
 Expected shares use activation-corrected virtual budget seconds:
 <code>B_i = max(0, v_i * round_seconds - activations_i * activation_cost)</code>.
+The default tiered scenario assigns 50% of the total virtual budget to many
+small threads, 35% to medium threads, and 15% to a few large threads.
 </p>
 <section>
 <h2>Run Shape</h2>
@@ -427,18 +512,20 @@ Expected shares use activation-corrected virtual budget seconds:
   {metric("Rounds", str(args.rounds))}
   {metric("Round seconds", f"{args.min_round_seconds:g} to {args.max_round_seconds:g}")}
   {metric("Calibration seconds", f"{args.calibration_seconds:g}")}
+  {metric("Budget shapes", args.budget_shapes)}
   {metric("Adaptive", "yes" if args.adaptive else "no")}
 </div>
 </section>
 <section>
 <h2>Summary</h2>
 <table>
-<thead><tr><th>Implementation</th><th>Round</th><th>Seconds</th><th>Total work</th><th>Total variation</th><th>Relative RMSE</th><th>Correlation</th></tr></thead>
+<thead><tr><th>Implementation</th><th>Scenario</th><th>Round</th><th>Seconds</th><th>Total work</th><th>Total variation</th><th>Relative RMSE</th><th>Correlation</th></tr></thead>
 <tbody>
 {rows_html}
 </tbody>
 </table>
 </section>
+{class_sections}
 {bucket_sections}
 </body>
 </html>
@@ -450,11 +537,41 @@ def metric(label, value):
     return f"<div><span>{html.escape(label)}</span><strong>{html.escape(value)}</strong></div>"
 
 
-def bucket_table(implementation, round_index, bucket_rows):
+def class_table(implementation, scenario, round_index, class_rows):
+    rows = [
+        row
+        for row in class_rows
+        if row["implementation"] == implementation
+        and row["scenario"] == scenario
+        and row["round"] == round_index
+    ]
+    body = "\n".join(
+        f"<tr><td>{html.escape(row['budget_class'])}</td>"
+        f"<td>{row['threads']}</td>"
+        f"<td>{row['mean_virtual_budget']:.3e}</td>"
+        f"<td>{row['expected_share']:.5f}</td>"
+        f"<td>{row['actual_share']:.5f}</td>"
+        f"<td>{row['actual_over_expected']:.4f}</td></tr>"
+        for row in rows
+    )
+    return f"""<section>
+<h2>{html.escape(implementation)} {html.escape(scenario)} Round {round_index} Classes</h2>
+<table>
+<thead><tr><th>Class</th><th>Threads</th><th>Mean budget</th><th>Expected share</th><th>Actual share</th><th>Actual / expected</th></tr></thead>
+<tbody>
+{body}
+</tbody>
+</table>
+</section>"""
+
+
+def bucket_table(implementation, scenario, round_index, bucket_rows):
     rows = [
         row
         for row in bucket_rows
-        if row["implementation"] == implementation and row["round"] == round_index
+        if row["implementation"] == implementation
+        and row["scenario"] == scenario
+        and row["round"] == round_index
     ]
     body = "\n".join(
         f"<tr><td>{row['bucket']}</td>"
@@ -467,7 +584,7 @@ def bucket_table(implementation, round_index, bucket_rows):
         for row in rows
     )
     return f"""<section>
-<h2>{html.escape(implementation)} Round {round_index} Budget Deciles</h2>
+<h2>{html.escape(implementation)} {html.escape(scenario)} Round {round_index} Budget Deciles</h2>
 <table>
 <thead><tr><th>Bucket</th><th>Threads</th><th>Min budget</th><th>Max budget</th><th>Expected share</th><th>Actual share</th><th>Actual / expected</th></tr></thead>
 <tbody>
@@ -482,6 +599,7 @@ def print_summary(rows):
         sys.stdout,
         fieldnames=[
             "implementation",
+            "scenario",
             "round",
             "threads",
             "round_seconds",
@@ -507,9 +625,9 @@ def main():
     ).resolve()
 
     parsed = run_native_hosts(args)
-    all_rows, summary_rows, bucket_rows = summarize(parsed)
-    detail_csv, summary_csv, bucket_csv, html_report = write_outputs(
-        output_dir, all_rows, summary_rows, bucket_rows, args
+    all_rows, summary_rows, bucket_rows, class_rows = summarize(parsed)
+    detail_csv, summary_csv, bucket_csv, class_csv, html_report = write_outputs(
+        output_dir, all_rows, summary_rows, bucket_rows, class_rows, args
     )
 
     print()
@@ -518,6 +636,7 @@ def main():
     print(f"wrote_detail_csv,{detail_csv}")
     print(f"wrote_summary_csv,{summary_csv}")
     print(f"wrote_bucket_csv,{bucket_csv}")
+    print(f"wrote_class_csv,{class_csv}")
     print(f"wrote_html_report,{html_report}")
 
     if args.fail_total_variation_above is not None:
