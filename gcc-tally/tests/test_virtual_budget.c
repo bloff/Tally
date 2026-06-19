@@ -42,12 +42,12 @@ int main(void){
 
     TallyVirtualRunResult result = tally_virtual_thread_run_ready(&virtual_thread, &calibration);
     assert(result == TALLY_VIRTUAL_ERRORED);
-    assert(virtual_thread.last_budget == 100);
+    assert(virtual_thread.last_budget == 0);
 
     tally_virtual_thread_init(&virtual_thread, NULL, 0.5);
     result = tally_virtual_thread_run_ready(&virtual_thread, &calibration);
-    assert(result == TALLY_VIRTUAL_NOT_READY);
-    assert(virtual_thread.skipped_cycles == 1);
+    assert(result == TALLY_VIRTUAL_ERRORED);
+    assert(virtual_thread.skipped_cycles == 0);
 
     const char *path = "/tmp/tally_virtual_calibration_test.txt";
     assert(tally_virtual_calibration_write_file(path, &calibration) == 0);

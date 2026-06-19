@@ -168,3 +168,24 @@ time around many activations, aggregates `budget_units_consumed`, activation
 count, and scheduler-round count, then updates `seconds_per_budget_unit` with a
 smoothed estimate. This preserves proportionality as well as the current machine
 load and cache behavior allow, while avoiding noisy sub-microsecond timing.
+
+To test whether the native calibrations produce proportional work allocation,
+run the fairness harness:
+
+```sh
+python3 tests/native-virtual-budget-fairness.py \
+  --repo-root . \
+  --gcc-binary gcc-tally/bin/virtual_budget_fairness \
+  --llvm-binary /tmp/tally-all-build/llvm-tally/bin/llvm-tally-virtual-budget-fairness
+```
+
+By default this calibrates each runtime natively, then runs three randomized
+10-20 second rounds with 50,000 minithreads whose virtual budgets sum to `0.5`.
+For each thread it compares the observed work share `W_i / sum(W_i)` against the
+activation-corrected budget share `B_i / sum(B_i)`, where
+`B_i = max(0, v_i * round_seconds - activations_i * activation_cost)`. It writes:
+
+- `results/native-virtual-budget-fairness/native-virtual-budget-fairness-detail.csv`
+- `results/native-virtual-budget-fairness/native-virtual-budget-fairness-summary.csv`
+- `results/native-virtual-budget-fairness/native-virtual-budget-fairness-buckets.csv`
+- `results/native-virtual-budget-fairness/native-virtual-budget-fairness-report.html`

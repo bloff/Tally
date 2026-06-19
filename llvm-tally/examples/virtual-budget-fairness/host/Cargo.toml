@@ -1,0 +1,7 @@
+[package]
+name = "llvm-tally-virtual-budget-fairness"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+llvm-tally-runtime = { path = "../../../runtime" }

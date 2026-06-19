@@ -1,4 +1,6 @@
 **/.DS_Store
+**/__pycache__/
+*.py[cod]
 
 # Build and generated outputs. Some historical artifacts in these directories
 # are still tracked, but new files should not be treated as source.

@@ -63,6 +63,17 @@ add_custom_target(virtual_budget_probe ALL
         src/tally/runtime/instrumented/virtual_budget_probe.c
 )
 
+add_custom_target(self_walk_worker ALL
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build-instrumented.sh"
+            "experiments/self_walk/instrumented/self_walk"
+    DEPENDS
+        gcc-tally
+        minithread
+        scripts/build-instrumented.sh
+        experiments/self_walk/instrumented/self_walk.c
+        include/self_walk.h
+)
+
 file(GLOB_RECURSE module_src_clean "${TALLY_MODULE_DIR}/clean/*.c")
 file(GLOB_RECURSE module_src_instrumented "${TALLY_MODULE_DIR}/instrumented/*.c")
 set_source_files_properties(${module_src_instrumented} PROPERTIES COMPILE_FLAGS "${INSTRUMENTATION_COMPILE_FLAGS}")
@@ -85,10 +96,18 @@ target_link_libraries(budget_walk minithread m dl Threads::Threads)
 add_executable(self_walk experiments/self_walk/self_walk.c)
 set_target_properties(self_walk PROPERTIES COMPILE_FLAGS "-ldl -rdynamic -g -lpthread -no-pie -fno-pie -fPIC -save-temps")
 set_target_properties(self_walk PROPERTIES LINK_FLAGS "-Wl,-R -Wl,. -ldl -Wl,--export-dynamic")
-add_dependencies(self_walk gcc-tally)
+add_dependencies(self_walk gcc-tally self_walk_worker)
 target_include_directories(self_walk PRIVATE "${TALLY_INCLUDE_DIR}")
 target_compile_definitions(self_walk PRIVATE TALLY_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(self_walk minithread m dl Threads::Threads)
+
+add_executable(virtual_budget_fairness experiments/virtual_budget_fairness/virtual_budget_fairness.c)
+set_target_properties(virtual_budget_fairness PROPERTIES COMPILE_FLAGS "-ldl -rdynamic -g -lpthread -no-pie -fno-pie -fPIC -save-temps")
+set_target_properties(virtual_budget_fairness PROPERTIES LINK_FLAGS "-Wl,-R -Wl,. -ldl -Wl,--export-dynamic")
+add_dependencies(virtual_budget_fairness gcc-tally virtual_budget_probe self_walk_worker)
+target_include_directories(virtual_budget_fairness PRIVATE "${TALLY_INCLUDE_DIR}")
+target_compile_definitions(virtual_budget_fairness PRIVATE TALLY_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(virtual_budget_fairness minithread m dl Threads::Threads)
 
 enable_testing()
 

@@ -22,6 +22,9 @@ set(LLVM_TALLY_HOST_OUTPUT "${LLVM_TALLY_BIN_DIR}/llvm-tally-random-walk")
 set(LLVM_TALLY_SELF_HOST_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/examples/self-walk/host/Cargo.toml")
 set(LLVM_TALLY_SELF_HOST_BINARY "${LLVM_TALLY_CARGO_TARGET_DIR}/release/llvm-tally-self-walk")
 set(LLVM_TALLY_SELF_HOST_OUTPUT "${LLVM_TALLY_BIN_DIR}/llvm-tally-self-walk")
+set(LLVM_TALLY_FAIRNESS_HOST_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/examples/virtual-budget-fairness/host/Cargo.toml")
+set(LLVM_TALLY_FAIRNESS_HOST_BINARY "${LLVM_TALLY_CARGO_TARGET_DIR}/release/llvm-tally-virtual-budget-fairness")
+set(LLVM_TALLY_FAIRNESS_HOST_OUTPUT "${LLVM_TALLY_BIN_DIR}/llvm-tally-virtual-budget-fairness")
 
 add_custom_command(
     OUTPUT "${LLVM_TALLY_HOST_OUTPUT}"
@@ -59,6 +62,24 @@ add_custom_command(
 
 add_custom_target(llvm-tally-self-walk-host ALL
     DEPENDS "${LLVM_TALLY_SELF_HOST_OUTPUT}"
+)
+
+add_custom_command(
+    OUTPUT "${LLVM_TALLY_FAIRNESS_HOST_OUTPUT}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${LLVM_TALLY_BIN_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E env
+            CARGO_TARGET_DIR="${LLVM_TALLY_CARGO_TARGET_DIR}"
+            cargo build --release --manifest-path "${LLVM_TALLY_FAIRNESS_HOST_MANIFEST}"
+    COMMAND "${CMAKE_COMMAND}" -E copy "${LLVM_TALLY_FAIRNESS_HOST_BINARY}" "${LLVM_TALLY_FAIRNESS_HOST_OUTPUT}"
+    DEPENDS
+        "${LLVM_TALLY_FAIRNESS_HOST_MANIFEST}"
+        examples/virtual-budget-fairness/host/src/main.rs
+        runtime/Cargo.toml
+        runtime/src/lib.rs
+)
+
+add_custom_target(llvm-tally-virtual-budget-fairness-host ALL
+    DEPENDS "${LLVM_TALLY_FAIRNESS_HOST_OUTPUT}"
 )
 
 enable_testing()

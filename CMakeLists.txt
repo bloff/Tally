@@ -41,3 +41,23 @@ add_test(
             --output-dir "${CMAKE_CURRENT_BINARY_DIR}/virtual-budget-calibration-smoke"
 )
 set_tests_properties(calibrate_virtual_budget_smoke PROPERTIES TIMEOUT 60)
+
+add_test(
+    NAME native_virtual_budget_fairness_smoke
+    COMMAND Python3::Interpreter
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native-virtual-budget-fairness.py"
+            --repo-root "${CMAKE_CURRENT_SOURCE_DIR}"
+            --gcc-binary "${CMAKE_CURRENT_SOURCE_DIR}/gcc-tally/bin/virtual_budget_fairness"
+            --llvm-binary "${CMAKE_CURRENT_BINARY_DIR}/llvm-tally/bin/llvm-tally-virtual-budget-fairness"
+            --thread-count 100
+            --rounds 1
+            --min-round-seconds 0.05
+            --max-round-seconds 0.05
+            --total-virtual-budget 0.5
+            --calibration-seconds 0
+            --calibration-work 1000
+            --gcc-stack-words 1024
+            --llvm-stack-bytes 16384
+            --output-dir "${CMAKE_CURRENT_BINARY_DIR}/native-virtual-budget-fairness-smoke"
+)
+set_tests_properties(native_virtual_budget_fairness_smoke PROPERTIES TIMEOUT 60)

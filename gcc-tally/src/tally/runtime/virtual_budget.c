@@ -156,6 +156,23 @@ static int run_probe_sample(
             if(done[i]){
                 continue;
             }
+            if(threads[i]->state == MINITHREAD_RETURNED){
+                done[i] = true;
+                active_threads--;
+                continue;
+            }
+            if(threads[i]->state == MINITHREAD_ERRORED){
+                for(size_t j = 0; j < thread_count; j++){
+                    if(threads[j] != NULL){
+                        minithread_join(threads[j]);
+                        free(threads[j]);
+                    }
+                }
+                free(threads);
+                free(args);
+                free(done);
+                return -1;
+            }
 
             minithread_run_cycle(threads[i]);
             thread_cycles++;
@@ -573,15 +590,21 @@ TallyVirtualRunResult tally_virtual_thread_run_ready(
     if(virtual_thread == NULL){
         return TALLY_VIRTUAL_ERRORED;
     }
+    if(virtual_thread->thread == NULL){
+        return TALLY_VIRTUAL_ERRORED;
+    }
+    if(virtual_thread->thread->state == MINITHREAD_RETURNED){
+        return TALLY_VIRTUAL_FINISHED;
+    }
+    if(virtual_thread->thread->state == MINITHREAD_ERRORED){
+        return TALLY_VIRTUAL_ERRORED;
+    }
 
     int64_t budget = tally_virtual_budget_from_seconds(calibration, virtual_thread->credit_seconds);
     virtual_thread->last_budget = budget;
     if(budget <= 0){
         virtual_thread->skipped_cycles++;
         return TALLY_VIRTUAL_NOT_READY;
-    }
-    if(virtual_thread->thread == NULL){
-        return TALLY_VIRTUAL_ERRORED;
     }
 
     minithread_change_cycles(virtual_thread->thread, budget);
