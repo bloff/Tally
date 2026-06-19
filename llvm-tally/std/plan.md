@@ -306,15 +306,33 @@ the temporary worktree intact for manual inspection.
 ## Open Questions
 
 - Can the local rustc load the system-built LLVM pass plugin despite the LLVM
-  patch-version mismatch?
+  patch-version mismatch? Answer from the first implementation: no, local
+  rustc rejects `-load-pass-plugin` through `-C llvm-args`. The working route is
+  build-std bitcode capture plus `opt` artifact rewriting.
 - Do we need nightly installed locally, or can distro Rust's unstable Cargo
-  flags be used with a bootstrap escape hatch? Prefer nightly if possible.
+  flags be used with a bootstrap escape hatch? Answer from the first
+  implementation: distro Rust 1.95 works with `RUSTC_BOOTSTRAP=1`, local
+  `rust-src`, and `-Cpanic=immediate-abort`.
 - What is the minimal crate set for a useful `std` workload: `core,alloc,std`
   only, or do we need `panic_abort` and compiler-builtins details immediately?
 - Should instrumented std be linked into shared-object workloads only, or do we
   also want full executables using the private sysroot?
 - How much of `std` should be charged? For example, should allocator and panic
   paths count the same way as normal library code?
+
+## Current Implementation Snapshot
+
+The first working implementation now builds the local Rust 1.95 std sources
+from `/usr/lib/rustlib/src/rust`, emits LLVM bitcode for build-std crates,
+instruments `core`, `alloc`, `std`, and `panic_abort` with the existing
+`tally-instrument` `opt` pass, compiles the instrumented bitcode back to object
+files, and repacks copied `.rlib` artifacts while preserving metadata.
+
+The generated private sysroot is build-local and does not modify `/usr`. The
+first std-heavy workload uses `Vec`, `Box<[u64]>`, iterators, and sorting, then
+loads as a shared object into the normal Tally runtime. The opt-in
+`llvm_std_workload_smoke` test verifies that this workload runs inside Tally
+minithreads and accumulates nonzero charge counts from instrumented std code.
 
 ## References
 

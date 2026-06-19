@@ -28,6 +28,9 @@ set(LLVM_TALLY_FAIRNESS_HOST_OUTPUT "${LLVM_TALLY_BIN_DIR}/llvm-tally-virtual-bu
 set(LLVM_TALLY_MEMORY_HOST_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/examples/memory-recovery/host/Cargo.toml")
 set(LLVM_TALLY_MEMORY_HOST_BINARY "${LLVM_TALLY_CARGO_TARGET_DIR}/release/llvm-tally-memory-recovery")
 set(LLVM_TALLY_MEMORY_HOST_OUTPUT "${LLVM_TALLY_BIN_DIR}/llvm-tally-memory-recovery")
+set(LLVM_TALLY_STD_VEC_HOST_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/std/examples/std-vec-host/Cargo.toml")
+set(LLVM_TALLY_STD_VEC_HOST_BINARY "${LLVM_TALLY_CARGO_TARGET_DIR}/release/llvm-tally-std-vec-host")
+set(LLVM_TALLY_STD_VEC_HOST_OUTPUT "${LLVM_TALLY_BIN_DIR}/llvm-tally-std-vec-host")
 
 add_custom_command(
     OUTPUT "${LLVM_TALLY_HOST_OUTPUT}"
@@ -104,6 +107,25 @@ add_custom_target(llvm-tally-memory-recovery-host ALL
     DEPENDS "${LLVM_TALLY_MEMORY_HOST_OUTPUT}"
 )
 
+add_custom_command(
+    OUTPUT "${LLVM_TALLY_STD_VEC_HOST_OUTPUT}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${LLVM_TALLY_BIN_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E env
+            CARGO_TARGET_DIR="${LLVM_TALLY_CARGO_TARGET_DIR}"
+            cargo build --release --manifest-path "${LLVM_TALLY_STD_VEC_HOST_MANIFEST}"
+    COMMAND "${CMAKE_COMMAND}" -E copy "${LLVM_TALLY_STD_VEC_HOST_BINARY}" "${LLVM_TALLY_STD_VEC_HOST_OUTPUT}"
+    DEPENDS
+        "${LLVM_TALLY_STD_VEC_HOST_MANIFEST}"
+        std/examples/std-vec-host/build.rs
+        std/examples/std-vec-host/src/main.rs
+        runtime/Cargo.toml
+        runtime/src/lib.rs
+)
+
+add_custom_target(llvm-tally-std-vec-host ALL
+    DEPENDS "${LLVM_TALLY_STD_VEC_HOST_OUTPUT}"
+)
+
 enable_testing()
 
 add_test(
@@ -147,6 +169,24 @@ add_test(
             "${LLVM_TALLY_MEMORY_HOST_OUTPUT}"
 )
 
-set_tests_properties(llvm_runtime_tests llvm_pass_basic llvm_random_walk_integration llvm_self_walk_integration llvm_memory_recovery_integration
+add_test(
+    NAME llvm_std_tooling_smoke
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/std/tests/smoke-std-tooling.sh"
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+            "${CMAKE_CURRENT_BINARY_DIR}"
+            "$<TARGET_FILE:llvm-tally-pass>"
+)
+
+add_test(
+    NAME llvm_std_workload_smoke
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/std/tests/smoke-std-workload.sh"
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+            "${CMAKE_CURRENT_BINARY_DIR}"
+            "$<TARGET_FILE:llvm-tally-pass>"
+            "${LLVM_TALLY_STD_VEC_HOST_OUTPUT}"
+)
+
+set_tests_properties(llvm_runtime_tests llvm_pass_basic llvm_random_walk_integration llvm_self_walk_integration llvm_memory_recovery_integration llvm_std_tooling_smoke
     PROPERTIES TIMEOUT 30
 )
+set_tests_properties(llvm_std_workload_smoke PROPERTIES TIMEOUT 120)

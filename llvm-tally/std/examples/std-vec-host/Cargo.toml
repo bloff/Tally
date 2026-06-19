@@ -1,0 +1,8 @@
+[package]
+name = "llvm-tally-std-vec-host"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+llvm-tally-runtime = { path = "../../../runtime" }
