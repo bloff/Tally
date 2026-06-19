@@ -29,6 +29,15 @@ Rust runtime, without changing rustc itself.
 - `examples/memory-recovery/host/`: Rust host executable that verifies memory
   failures mark only the offending minithread `Errored` and the scheduler can
   continue running healthy minithreads.
+- `std/abi/`: tiny C ABI bridge built as `libtally_abi_bridge.so`. Std-using
+  workloads link against this bridge so `__tally_charge` and future allocation
+  hooks resolve inside a `dlmopen` namespace instead of the manager's base
+  namespace.
+- `std/scripts/`: local-Rust-source tooling that builds and instruments a
+  private std sysroot, then compiles std-using workloads against it.
+- `std/examples/std-vec-*`: first std-heavy workload and host pair. The workload
+  uses `Vec`, `Box<[u64]>`, iterators, and sorting; the host loads it through a
+  namespace-backed std environment.
 - `scripts/`: rustc/opt/clang pipeline for turning workload Rust into an
   instrumented shared object.
 - `tests/`: pass fixtures and integration scripts.
@@ -46,6 +55,15 @@ Unlike `gcc-tally`, this prototype does not reserve `r15`. That keeps the Rust
 path independent from rustc backend changes, but it means the budget check is
 more expensive than the original register-based GCC instrumentation.
 
+Std-using workloads use a separate loader path. `TallyManager` creates a std
+environment by loading `libtally_abi_bridge.so` with `dlmopen(LM_ID_NEWLM, ...)`,
+installs a table of base-namespace runtime function pointers into that bridge,
+and then loads all workloads for the same instrumented/pruned std profile into
+that namespace. The manager's own Rust `std` remains the normal process copy in
+the base namespace. Workload handles can be unloaded after all minithreads are
+returned or errored; the first implementation refuses unload while any
+minithread is still active.
+
 ## Memory Accounting Model
 
 `spawn_with_limits` creates minithreads with separate stack and heap limits.
@@ -59,9 +77,10 @@ scheduler instead of terminating the host process.
 The heap path is currently explicit rather than transparent. Instrumented
 workloads can call `__tally_alloc`, `__tally_dealloc`, and `__tally_realloc` to
 allocate from a simple per-minithread bump heap. Heap exhaustion records a
-`HeapLimit` error and yields to the scheduler. This does not yet cover ordinary
-Rust `std` allocation paths such as `Vec`, `Box`, or `String`; those require the
-future global-allocator or instrumented-standard-library phase.
+`HeapLimit` error and yields to the scheduler. The namespace bridge exports the
+same allocation hooks for future instrumented/pruned `std` allocator work, but
+ordinary Rust `std` allocation paths such as `Vec`, `Box`, or `String` still use
+Rust's normal allocator in the current prototype.
 
 ## Performance Comparison Workload
 
@@ -78,9 +97,12 @@ storage strategy.
 
 - Linux/x86-64 only.
 - External pipeline only: `rustc --emit=llvm-bc`, then `opt`, then `clang`.
-- The v1 workload is a controlled `#![no_std]` crate with `panic=abort`.
-- Dependencies and the Rust standard library are not instrumented.
+- The original v1 workload is a controlled `#![no_std]` crate with
+  `panic=abort`.
+- Std instrumentation is currently a local private-sysroot artifact pipeline,
+  not a Cargo-native replacement toolchain.
 - The per-minithread heap is a bump allocator; freed blocks are accounted for
   but not reused yet.
+- Rust `std` allocation is not yet redirected to the per-minithread heap.
 - The pass uses a simple LLVM IR instruction cost model rather than a calibrated
   machine-instruction model.

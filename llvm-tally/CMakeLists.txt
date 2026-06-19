@@ -32,6 +32,13 @@ set(LLVM_TALLY_STD_VEC_HOST_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/std/examples/s
 set(LLVM_TALLY_STD_VEC_HOST_BINARY "${LLVM_TALLY_CARGO_TARGET_DIR}/release/llvm-tally-std-vec-host")
 set(LLVM_TALLY_STD_VEC_HOST_OUTPUT "${LLVM_TALLY_BIN_DIR}/llvm-tally-std-vec-host")
 
+add_library(tally_abi_bridge SHARED
+    std/abi/tally_abi_bridge.c
+)
+set_target_properties(tally_abi_bridge PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${LLVM_TALLY_BIN_DIR}"
+)
+
 add_custom_command(
     OUTPUT "${LLVM_TALLY_HOST_OUTPUT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${LLVM_TALLY_BIN_DIR}"
@@ -178,15 +185,22 @@ add_test(
 )
 
 add_test(
+    NAME llvm_abi_bridge_symbols
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/std/tests/smoke-abi-bridge.sh"
+            "$<TARGET_FILE:tally_abi_bridge>"
+)
+
+add_test(
     NAME llvm_std_workload_smoke
     COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/std/tests/smoke-std-workload.sh"
             "${CMAKE_CURRENT_SOURCE_DIR}"
             "${CMAKE_CURRENT_BINARY_DIR}"
             "$<TARGET_FILE:llvm-tally-pass>"
             "${LLVM_TALLY_STD_VEC_HOST_OUTPUT}"
+            "$<TARGET_FILE:tally_abi_bridge>"
 )
 
-set_tests_properties(llvm_runtime_tests llvm_pass_basic llvm_random_walk_integration llvm_self_walk_integration llvm_memory_recovery_integration llvm_std_tooling_smoke
+set_tests_properties(llvm_runtime_tests llvm_pass_basic llvm_random_walk_integration llvm_self_walk_integration llvm_memory_recovery_integration llvm_std_tooling_smoke llvm_abi_bridge_symbols
     PROPERTIES TIMEOUT 30
 )
 set_tests_properties(llvm_std_workload_smoke PROPERTIES TIMEOUT 120)

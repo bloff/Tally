@@ -50,7 +50,9 @@ unsafe extern "C" {
 #[link(name = "dl")]
 unsafe extern "C" {
     fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
+    fn dlmopen(nsid: LinkMapNamespace, filename: *const c_char, flags: c_int) -> *mut c_void;
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    fn dlinfo(handle: *mut c_void, request: c_int, arg: *mut c_void) -> c_int;
     fn dlclose(handle: *mut c_void) -> c_int;
     fn dlerror() -> *const c_char;
 }
@@ -74,7 +76,10 @@ unsafe extern "C" {
 }
 
 const RTLD_NOW: c_int = 2;
+const RTLD_LOCAL: c_int = 0;
 const RTLD_GLOBAL: c_int = 0x100;
+const RTLD_DI_LMID: c_int = 1;
+const LM_ID_NEWLM: LinkMapNamespace = -1;
 const PROT_NONE: c_int = 0;
 const PROT_READ: c_int = 1;
 const PROT_WRITE: c_int = 2;
@@ -171,6 +176,19 @@ pub enum ThreadState {
 }
 
 pub type TallyEntry = unsafe extern "C" fn(*mut c_void);
+pub type TallyStdEnvironmentId = usize;
+
+type LinkMapNamespace = isize;
+
+#[repr(C)]
+struct TallyAbiHooks {
+    charge: Option<extern "C" fn(u64)>,
+    alloc: Option<extern "C" fn(u64, u64) -> *mut c_void>,
+    dealloc: Option<extern "C" fn(*mut c_void, u64, u64)>,
+    realloc: Option<extern "C" fn(*mut c_void, u64, u64, u64) -> *mut c_void>,
+}
+
+type TallyAbiSetHooks = unsafe extern "C" fn(*const TallyAbiHooks);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadError {
@@ -327,10 +345,17 @@ pub struct TallyManager {
     scheduler_context: Context,
     threads: Vec<Box<TallyThread>>,
     libraries: Vec<DynamicLibrary>,
+    std_environments: Vec<TallyStdEnvironment>,
 }
 
 pub struct DynamicLibrary {
     handle: *mut c_void,
+}
+
+struct TallyStdEnvironment {
+    namespace_id: LinkMapNamespace,
+    _bridge: DynamicLibrary,
+    workloads: Vec<DynamicLibrary>,
 }
 
 static mut CURRENT_THREAD: *mut TallyThread = ptr::null_mut();
@@ -342,6 +367,7 @@ impl TallyManager {
             scheduler_context: Context::default(),
             threads: Vec::new(),
             libraries: Vec::new(),
+            std_environments: Vec::new(),
         }
     }
 
@@ -354,6 +380,64 @@ impl TallyManager {
         let function = library.symbol(symbol)?;
         self.libraries.push(library);
         Ok(function)
+    }
+
+    pub fn create_std_environment(
+        &mut self,
+        bridge_path: impl AsRef<Path>,
+    ) -> Result<TallyStdEnvironmentId, TallyError> {
+        let environment = TallyStdEnvironment::open(bridge_path.as_ref())?;
+        let id = self.std_environments.len();
+        self.std_environments.push(environment);
+        Ok(id)
+    }
+
+    pub fn load_function_in_std_environment(
+        &mut self,
+        environment_id: TallyStdEnvironmentId,
+        path: impl AsRef<Path>,
+        symbol: &str,
+    ) -> Result<TallyEntry, TallyError> {
+        let environment = self
+            .std_environments
+            .get_mut(environment_id)
+            .ok_or_else(|| {
+                TallyError::new(format!("unknown std environment id {environment_id}"))
+            })?;
+        environment.load_function(path.as_ref(), symbol)
+    }
+
+    pub fn unload_std_environment_workloads(
+        &mut self,
+        environment_id: TallyStdEnvironmentId,
+    ) -> Result<usize, TallyError> {
+        if self
+            .threads
+            .iter()
+            .any(|thread| !matches!(thread.state, ThreadState::Returned | ThreadState::Errored))
+        {
+            return Err(TallyError::new(
+                "cannot unload std workloads while minithreads are still active",
+            ));
+        }
+
+        let environment = self
+            .std_environments
+            .get_mut(environment_id)
+            .ok_or_else(|| {
+                TallyError::new(format!("unknown std environment id {environment_id}"))
+            })?;
+        Ok(environment.unload_workloads())
+    }
+
+    pub fn std_environment_namespace_id(
+        &self,
+        environment_id: TallyStdEnvironmentId,
+    ) -> Result<isize, TallyError> {
+        self.std_environments
+            .get(environment_id)
+            .map(|environment| environment.namespace_id)
+            .ok_or_else(|| TallyError::new(format!("unknown std environment id {environment_id}")))
     }
 
     pub fn spawn(
@@ -1500,10 +1584,38 @@ impl TallyThread {
 
 impl DynamicLibrary {
     fn open(path: &Path) -> Result<Self, TallyError> {
+        Self::open_with_dlopen(path, RTLD_NOW | RTLD_GLOBAL)
+    }
+
+    fn open_in_new_namespace(path: &Path) -> Result<Self, TallyError> {
+        Self::open_with_dlmopen(LM_ID_NEWLM, path, RTLD_NOW | RTLD_LOCAL)
+    }
+
+    fn open_in_namespace(namespace_id: LinkMapNamespace, path: &Path) -> Result<Self, TallyError> {
+        Self::open_with_dlmopen(namespace_id, path, RTLD_NOW | RTLD_LOCAL)
+    }
+
+    fn open_with_dlopen(path: &Path, flags: c_int) -> Result<Self, TallyError> {
         let path = CString::new(path.to_string_lossy().as_bytes())
             .map_err(|_| TallyError::new("shared object path contains a NUL byte"))?;
         unsafe {
-            let handle = dlopen(path.as_ptr(), RTLD_NOW | RTLD_GLOBAL);
+            let handle = dlopen(path.as_ptr(), flags);
+            if handle.is_null() {
+                return Err(TallyError::new(dl_error()));
+            }
+            Ok(Self { handle })
+        }
+    }
+
+    fn open_with_dlmopen(
+        namespace_id: LinkMapNamespace,
+        path: &Path,
+        flags: c_int,
+    ) -> Result<Self, TallyError> {
+        let path = CString::new(path.to_string_lossy().as_bytes())
+            .map_err(|_| TallyError::new("shared object path contains a NUL byte"))?;
+        unsafe {
+            let handle = dlmopen(namespace_id, path.as_ptr(), flags);
             if handle.is_null() {
                 return Err(TallyError::new(dl_error()));
             }
@@ -1521,6 +1633,59 @@ impl DynamicLibrary {
             }
             Ok(mem::transmute::<*mut c_void, TallyEntry>(raw))
         }
+    }
+
+    fn raw_symbol(&self, symbol: &str) -> Result<*mut c_void, TallyError> {
+        let symbol =
+            CString::new(symbol).map_err(|_| TallyError::new("symbol name contains a NUL byte"))?;
+        unsafe {
+            let raw = dlsym(self.handle, symbol.as_ptr());
+            if raw.is_null() {
+                return Err(TallyError::new(dl_error()));
+            }
+            Ok(raw)
+        }
+    }
+
+    fn namespace_id(&self) -> Result<LinkMapNamespace, TallyError> {
+        let mut namespace_id = 0 as LinkMapNamespace;
+        unsafe {
+            let result = dlinfo(
+                self.handle,
+                RTLD_DI_LMID,
+                &mut namespace_id as *mut LinkMapNamespace as *mut c_void,
+            );
+            if result != 0 {
+                return Err(TallyError::new(dl_error()));
+            }
+        }
+        Ok(namespace_id)
+    }
+}
+
+impl TallyStdEnvironment {
+    fn open(bridge_path: &Path) -> Result<Self, TallyError> {
+        let bridge = DynamicLibrary::open_in_new_namespace(bridge_path)?;
+        let namespace_id = bridge.namespace_id()?;
+        install_tally_abi_hooks(&bridge)?;
+        Ok(Self {
+            namespace_id,
+            _bridge: bridge,
+            workloads: Vec::new(),
+        })
+    }
+
+    fn load_function(&mut self, path: &Path, symbol: &str) -> Result<TallyEntry, TallyError> {
+        let library = DynamicLibrary::open_in_namespace(self.namespace_id, path)?;
+        let function = library.symbol(symbol)?;
+        self.workloads.push(library);
+        Ok(function)
+    }
+
+    fn unload_workloads(&mut self) -> usize {
+        let unloaded = self.workloads.len();
+        self.workloads.clear();
+        unloaded
     }
 }
 
@@ -1544,6 +1709,43 @@ fn dl_error() -> String {
             CStr::from_ptr(err).to_string_lossy().into_owned()
         }
     }
+}
+
+fn install_tally_abi_hooks(bridge: &DynamicLibrary) -> Result<(), TallyError> {
+    let set_hooks = bridge.raw_symbol("tally_abi_set_hooks")?;
+    let set_hooks = unsafe { mem::transmute::<*mut c_void, TallyAbiSetHooks>(set_hooks) };
+    let hooks = TallyAbiHooks {
+        charge: Some(tally_abi_bridge_charge),
+        alloc: Some(tally_abi_bridge_alloc),
+        dealloc: Some(tally_abi_bridge_dealloc),
+        realloc: Some(tally_abi_bridge_realloc),
+    };
+
+    unsafe {
+        set_hooks(&hooks as *const TallyAbiHooks);
+    }
+    Ok(())
+}
+
+extern "C" fn tally_abi_bridge_charge(cost: u64) {
+    __tally_charge(cost);
+}
+
+extern "C" fn tally_abi_bridge_alloc(size: u64, align: u64) -> *mut c_void {
+    __tally_alloc(size, align)
+}
+
+extern "C" fn tally_abi_bridge_dealloc(ptr: *mut c_void, size: u64, align: u64) {
+    __tally_dealloc(ptr, size, align);
+}
+
+extern "C" fn tally_abi_bridge_realloc(
+    ptr: *mut c_void,
+    old_size: u64,
+    align: u64,
+    new_size: u64,
+) -> *mut c_void {
+    __tally_realloc(ptr, old_size, align, new_size)
 }
 
 #[no_mangle]
