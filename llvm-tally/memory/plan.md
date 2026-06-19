@@ -34,7 +34,9 @@ build-break fixes if absolutely necessary.
 - Keep host runtime memory separate from minithread memory.
 - Treat stack and heap budgets separately at first, then optionally expose a
   combined memory budget later.
-- Prefer deterministic runtime errors over process aborts where possible.
+- Treat deterministic scheduler-visible errors as a hard requirement. A
+  minithread must not be able to kill the whole process by exhausting stack or
+  heap memory.
 - Use OS guard pages as hard safety boundaries; use cooperative checks for clean
   accounting and graceful yield/error behavior.
 - Make the allocator path no-std-friendly and reentrancy-safe. Allocator hooks
@@ -117,8 +119,9 @@ Guard pages remain necessary because cooperative checks only happen at
 instrumented boundaries. A function with a huge stack frame may touch below the
 limit before the next `__tally_charge`.
 
-Phase 1 can let a guard-page hit terminate the process during tests, but the
-runtime should move toward graceful handling:
+Guard-page recovery is part of the feature, not a later debug nicety. The
+runtime should not claim hard stack-limit support until it can handle a
+minithread guard fault without killing the host process:
 
 - install a `SIGSEGV` handler on an alternate signal stack;
 - detect whether the fault address belongs to the current minithread's guard
@@ -126,8 +129,10 @@ runtime should move toward graceful handling:
 - mark that thread as `Errored`;
 - switch back to the scheduler.
 
-Signal recovery across custom context switching is delicate, so this should be
-Phase 2, after mapped stacks and cooperative checks are stable.
+Signal recovery across custom context switching is delicate. Until it works,
+tests should avoid intentionally crossing a hard guard page and should exercise
+recoverable soft-limit checks instead. Once guard pages are enabled for normal
+use, guard faults must be scheduler-recoverable.
 
 ## Heap Accounting And Limits
 
@@ -156,8 +161,15 @@ Start with a simple bump allocator arena per minithread:
 - fail allocation when the arena cannot satisfy the request.
 
 This gives clear isolation and a simple upper bound. It is not a general
-allocator yet, but it is enough to test memory budgets and std-heavy workloads
-that do not need long-running reuse.
+allocator yet, but it is enough to test memory budgets through direct allocation
+ABI calls.
+
+Allocator reuse means giving memory back to the per-minithread heap when user
+code frees it, so a later allocation can use the same block again. A pure bump
+allocator does not do that: it only moves forward and reclaims everything when
+the minithread exits. That is fine for first tests, but `std`-heavy workloads
+with repeated `Vec` growth/drop, `Box` allocation, or `String` churn need at
+least a simple free list or size-class reuse before the results are meaningful.
 
 ### Runtime allocation ABI
 
@@ -174,9 +186,22 @@ Behavior:
 - If `CURRENT_THREAD` is null, use the host/system allocator or return null,
   depending on which call site is expected.
 - If a minithread is active, allocate from that thread's heap.
-- On limit exceed, mark the thread as memory-exhausted and return null.
+- On limit exceed from an explicitly fallible Tally allocation call, mark the
+  thread memory-exhausted and return null or an allocation-failure result.
+- On limit exceed from Rust's ordinary infallible allocation paths, mark the
+  thread `Errored` and yield to the scheduler before Rust reaches a process
+  abort path.
 - Do not unwind from allocator hooks.
 - Track requested bytes and actual aligned bytes separately.
+
+Rust caveat: ordinary `Vec::push`, `Box::new`, and many `String` growth paths do
+not behave like recoverable exceptions on out-of-memory. Fallible APIs such as
+`try_reserve` can report allocation failure to user code, but the usual global
+allocation failure path calls `handle_alloc_error`, which aborts by default.
+That means the Tally allocator cannot simply return null to `std` and hope user
+code catches an exception. For scheduler recoverability, the allocator must
+convert per-minithread heap exhaustion into a scheduler-level error before the
+standard library's abort path runs.
 
 ### Later heap model: real per-minithread allocator
 
@@ -257,15 +282,29 @@ pub struct MemoryLimits {
 Initial policy:
 
 - stack and heap are separate hard limits;
-- heap allocation returns null on exhaustion;
-- stack soft overflow marks thread errored at `__tally_charge`;
-- guard-page overflow is a process-level failure until signal recovery exists.
+- stack soft overflow marks the thread `Errored` at `__tally_charge` and yields
+  to the scheduler;
+- heap exhaustion returns allocation failure only when the caller is using an
+  explicitly fallible Tally/Rust API that can handle it;
+- heap exhaustion on ordinary `std` allocation paths marks the minithread
+  `Errored` and yields to the scheduler before a process abort can occur;
+- guard-page overflow must be scheduler-recoverable before guard pages are used
+  as an enabled runtime limit.
 
 Later policy:
 
 - optional combined memory budget;
 - optional dynamic virtual-memory budget, analogous to virtual CPU budget;
 - optional memory pressure scheduler policy.
+
+Scheduler-visible error behavior:
+
+- memory errors set a precise reason on the thread, such as `StackSoftLimit`,
+  `StackGuardFault`, or `HeapLimit`;
+- the scheduler continues running other minithreads;
+- completed or errored minithreads are never resumed;
+- host/runtime allocations are not charged to any minithread unless explicitly
+  requested.
 
 ## Runtime API Changes
 
@@ -325,12 +364,16 @@ The current LLVM pass does not need to change for the first stack check, because
 - Use recursion or large local arrays to approach the soft stack limit and
   verify `stack_peak_bytes` grows.
 - Verify cooperative overflow marks the thread `Errored`.
-- Later: verify guard-page overflow is caught on an alternate signal stack.
+- Verify guard-page overflow is caught on an alternate signal stack, marks only
+  the offending minithread `Errored`, and does not terminate the host process.
 
 ### Heap tests
 
 - Allocate within the per-thread heap and verify live/peak counters.
-- Allocate beyond limit and verify failure is reported without host corruption.
+- Allocate beyond limit through an explicitly fallible ABI and verify failure is
+  reported without host corruption.
+- Allocate beyond limit through the Rust global allocator path and verify only
+  the offending minithread is marked `Errored`.
 - Verify two minithreads cannot allocate from each other's heaps.
 - Verify deallocation reduces live bytes once free-list support exists.
 - Verify host allocations outside a minithread do not charge a minithread.
@@ -342,8 +385,9 @@ After std allocation integration:
 - `Vec::push` consumes heap budget.
 - `Box::new` consumes heap budget.
 - `String` growth consumes heap budget.
-- A workload that exceeds heap budget returns a controlled error or aborts only
-  the minithread, not the host process.
+- A workload that exceeds heap budget returns a controlled error where the Rust
+  API is fallible, or otherwise aborts only the minithread, not the host
+  process.
 
 ### Fairness and performance tests
 
@@ -354,19 +398,24 @@ After std allocation integration:
 
 ## Implementation Phases
 
-### Phase 1: Mapped stacks and stats
+### Phase 1: Memory stats and soft stack checks
 
-- Add `TallyStack`.
-- Use `mmap`/`mprotect`/`munmap`.
-- Add stack bounds and peak stack tracking at `__tally_charge`.
+- Add memory-limit configuration and stats structs.
+- Add stack bounds and peak stack tracking for the existing stack representation
+  at `__tally_charge`.
+- Mark thread errored when a charge observes stack use beyond the configured
+  soft limit.
 - Add memory stats API.
 - Keep existing tests passing.
 
-### Phase 2: Soft stack limits
+### Phase 2: Mapped stacks with recoverable guards
 
-- Add configurable soft stack limit/slop.
-- Mark thread errored when a charge observes stack use beyond limit.
-- Add recursion/large-frame tests.
+- Add `TallyStack`.
+- Use `mmap`/`mprotect`/`munmap`.
+- Install alternate signal stack.
+- Add `SIGSEGV` handler that recognizes current-thread stack guard faults.
+- Convert recoverable guard faults into `ThreadState::Errored`.
+- Add recursion/large-frame and guard-fault recovery tests.
 
 ### Phase 3: Per-minithread bump heap
 
@@ -375,33 +424,43 @@ After std allocation integration:
 - Add heap stats.
 - Add no-std workload that calls the allocation ABI directly.
 
-### Phase 4: Global allocator shim for workloads
+### Phase 4: Minimal allocator reuse
+
+- Add free-list or size-class reuse for freed blocks.
+- Keep allocation headers with requested size and actual size.
+- Support enough `realloc` behavior for `Vec`/`String` growth tests.
+- Add repeated allocate/free tests that would exhaust a bump allocator but stay
+  within live heap limits when reuse works.
+
+### Phase 5: Global allocator shim for workloads
 
 - Add a small Rust allocator shim crate or module for instrumented workloads.
 - Use `#[global_allocator]` to route `Vec`/`Box`/`String` to Tally heap.
 - Keep host runtime on normal system allocator.
+- Ensure global-allocator heap exhaustion marks only the current minithread
+  `Errored` and switches back to the scheduler.
 
-### Phase 5: Instrumented std integration
+### Phase 6: Instrumented std integration
 
 - Once the private instrumented std sysroot exists, test standard library code
   with the Tally allocator shim.
 - Decide whether a private std allocator patch is needed.
 
-### Phase 6: Guard-page recovery
+## Resolved Policy Decisions
 
-- Install alternate signal stack.
-- Add `SIGSEGV` handler that recognizes current-thread stack guard faults.
-- Convert recoverable guard faults into `ThreadState::Errored`.
-
-## Open Questions
-
-- Should memory exhaustion yield to the scheduler, mark the thread errored, or
-  return allocation failure to user code where possible?
-- Should stack and heap share one virtual memory budget or remain separate?
-- How much allocator reuse is needed before std-heavy workloads become useful?
-- Can guard-page signal recovery safely swap back to the scheduler in all cases,
-  or should we initially treat guard faults as fatal debug diagnostics?
-- How should memory budgets interact with future multi-core scheduling?
+- Stack exhaustion yields to the scheduler and marks the minithread `Errored`.
+- Heap exhaustion returns normal allocation failure only for explicitly fallible
+  APIs. For ordinary Rust allocation paths, it marks the minithread `Errored`
+  and returns control to the scheduler before the process can abort.
+- Stack and heap budgets remain separate in the first implementation.
+- Guard-page faults must be recoverable at scheduler level. If the runtime
+  cannot recover from a hard guard fault yet, hard guard pages are not complete
+  enough to be used as the normal enforcement mechanism.
+- Multi-core scheduling does not create a conceptual conflict for memory
+  budgets. It does create implementation requirements: current thread/scheduler
+  pointers should become thread-local, a minithread must never run on two worker
+  cores at once, and cross-worker stats inspection must use synchronization or
+  atomics.
 
 ## References
 
