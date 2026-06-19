@@ -53,6 +53,16 @@ target_include_directories(gcc-tally PRIVATE "${TALLY_INCLUDE_DIR}")
 # Compilation flags for instrumented module code.
 set(INSTRUMENTATION_COMPILE_FLAGS "-ffixed-r15 -fplugin=${TALLY_OUTPUT_DIR}/gcc-tally.so -nostdlib")
 
+add_custom_target(virtual_budget_probe ALL
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build-instrumented.sh"
+            "src/tally/runtime/instrumented/virtual_budget_probe"
+    DEPENDS
+        gcc-tally
+        minithread
+        scripts/build-instrumented.sh
+        src/tally/runtime/instrumented/virtual_budget_probe.c
+)
+
 file(GLOB_RECURSE module_src_clean "${TALLY_MODULE_DIR}/clean/*.c")
 file(GLOB_RECURSE module_src_instrumented "${TALLY_MODULE_DIR}/instrumented/*.c")
 set_source_files_properties(${module_src_instrumented} PROPERTIES COMPILE_FLAGS "${INSTRUMENTATION_COMPILE_FLAGS}")
@@ -62,7 +72,7 @@ set_target_properties(main PROPERTIES LINK_FLAGS "-Wl,-R -Wl,. -ldl -Wl,--export
 add_dependencies(main gcc-tally)
 target_include_directories(main PRIVATE "${TALLY_INCLUDE_DIR}")
 target_compile_definitions(main PRIVATE TALLY_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(main minithread dl Threads::Threads)
+target_link_libraries(main minithread m dl Threads::Threads)
 
 add_executable(budget_walk experiments/budget_walk/budget_walk.c ${module_src_clean} ${module_src_instrumented})
 set_target_properties(budget_walk PROPERTIES COMPILE_FLAGS "-ldl -rdynamic -g -lpthread -no-pie -fno-pie -fPIC -save-temps")
@@ -70,7 +80,7 @@ set_target_properties(budget_walk PROPERTIES LINK_FLAGS "-Wl,-R -Wl,. -ldl -Wl,-
 add_dependencies(budget_walk gcc-tally)
 target_include_directories(budget_walk PRIVATE "${TALLY_INCLUDE_DIR}")
 target_compile_definitions(budget_walk PRIVATE TALLY_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(budget_walk minithread dl Threads::Threads)
+target_link_libraries(budget_walk minithread m dl Threads::Threads)
 
 add_executable(self_walk experiments/self_walk/self_walk.c)
 set_target_properties(self_walk PROPERTIES COMPILE_FLAGS "-ldl -rdynamic -g -lpthread -no-pie -fno-pie -fPIC -save-temps")
@@ -78,7 +88,7 @@ set_target_properties(self_walk PROPERTIES LINK_FLAGS "-Wl,-R -Wl,. -ldl -Wl,--e
 add_dependencies(self_walk gcc-tally)
 target_include_directories(self_walk PRIVATE "${TALLY_INCLUDE_DIR}")
 target_compile_definitions(self_walk PRIVATE TALLY_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(self_walk minithread dl Threads::Threads)
+target_link_libraries(self_walk minithread m dl Threads::Threads)
 
 enable_testing()
 
@@ -95,7 +105,8 @@ add_test(NAME graph_load COMMAND test_graph_load)
 
 add_executable(test_virtual_budget tests/test_virtual_budget.c)
 target_include_directories(test_virtual_budget PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(test_virtual_budget minithread dl Threads::Threads)
+target_link_libraries(test_virtual_budget minithread m dl Threads::Threads)
+set_target_properties(test_virtual_budget PROPERTIES LINK_FLAGS "-Wl,--export-dynamic")
 set_target_properties(test_virtual_budget PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
 add_test(NAME virtual_budget_math COMMAND test_virtual_budget)
 

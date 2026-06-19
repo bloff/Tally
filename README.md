@@ -140,9 +140,31 @@ coded globally. The C side exposes this mapping in
 `TallyVirtualThread`. The Rust side exposes the same concepts as
 `VirtualCalibration` and `VirtualThread` in the `llvm_tally_runtime` crate.
 
+Both libraries also provide native startup calibration:
+
+- GCC/C: `tally_virtual_calibrate`, `tally_virtual_calibration_write_file`, and
+  `tally_virtual_calibration_read_file`.
+- LLVM/Rust: `VirtualCalibration::calibrate`,
+  `VirtualCalibration::write_to_file`, and
+  `VirtualCalibration::read_from_file`.
+
+The default native calibration configuration is intended for a real startup
+calibration run and targets roughly 30 seconds of amortized measurements. Tests
+and quick experiments can pass a shorter config. The persisted file format is
+the same small text format for both implementations, so calibration objects can
+be inspected and compared easily.
+
 In both APIs, a scheduler periodically grants each minithread
 `elapsed_wall_seconds * cpu_share` virtual CPU seconds. The helper then converts
 that accumulated credit into an internal budget only when the thread can afford
 the calibrated activation/context-switch cost plus at least one usable slice.
 Negative credit is allowed, which lets overshoot at instrumentation boundaries
 carry forward as debt.
+
+For runtime drift, use `TallyVirtualAdaptiveState` on the C side or
+`VirtualAdaptiveState` on the Rust side. These objects deliberately do not time
+individual minithread slices. Instead, the scheduler measures a window of wall
+time around many activations, aggregates `budget_units_consumed`, activation
+count, and scheduler-round count, then updates `seconds_per_budget_unit` with a
+smoothed estimate. This preserves proportionality as well as the current machine
+load and cache behavior allow, while avoiding noisy sub-microsecond timing.

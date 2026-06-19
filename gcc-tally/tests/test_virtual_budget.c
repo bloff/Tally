@@ -6,6 +6,7 @@
 
 #include <assert.h>
 #include <math.h>
+#include <stdio.h>
 
 static int close_enough(double left, double right){
     double diff = left > right ? left - right : right - left;
@@ -34,6 +35,7 @@ int main(void){
     tally_virtual_thread_init(&virtual_thread, NULL, 0.25);
     tally_virtual_thread_add_credit(&virtual_thread, 4.0);
     assert(close_enough(virtual_thread.credit_seconds, 1.0));
+    assert(virtual_thread.budget_units_consumed == 0);
 
     tally_virtual_thread_charge_scheduler_round(&virtual_thread, &calibration, 4);
     assert(close_enough(virtual_thread.credit_seconds, 0.995));
@@ -46,6 +48,34 @@ int main(void){
     result = tally_virtual_thread_run_ready(&virtual_thread, &calibration);
     assert(result == TALLY_VIRTUAL_NOT_READY);
     assert(virtual_thread.skipped_cycles == 1);
+
+    const char *path = "/tmp/tally_virtual_calibration_test.txt";
+    assert(tally_virtual_calibration_write_file(path, &calibration) == 0);
+    TallyVirtualCalibration loaded = tally_virtual_default_calibration();
+    assert(tally_virtual_calibration_read_file(path, &loaded) == 0);
+    assert(close_enough(loaded.seconds_per_budget_unit, calibration.seconds_per_budget_unit));
+    assert(close_enough(loaded.seconds_per_activation, calibration.seconds_per_activation));
+    assert(close_enough(loaded.seconds_per_scheduler_round, calibration.seconds_per_scheduler_round));
+    assert(loaded.min_internal_budget == calibration.min_internal_budget);
+    assert(loaded.max_internal_budget == calibration.max_internal_budget);
+    remove(path);
+
+    TallyVirtualAdaptiveState adaptive;
+    tally_virtual_adaptive_state_init(&adaptive);
+    adaptive.min_observation_seconds = 0.0;
+    double old_unit = calibration.seconds_per_budget_unit;
+    tally_virtual_adaptive_observe(&adaptive, &calibration, 1.0, 500, 0, 0);
+    assert(adaptive.updates == 1);
+    assert(calibration.seconds_per_budget_unit > old_unit);
+
+    TallyVirtualCalibrationConfig config = tally_virtual_default_calibration_config();
+    config.target_seconds = 0.0;
+    config.work_per_sample = 1000;
+    TallyVirtualCalibration measured = tally_virtual_default_calibration();
+    assert(tally_virtual_calibrate(&config, &measured) == 0);
+    assert(measured.seconds_per_budget_unit > 0.0);
+    assert(measured.min_internal_budget > 0);
+    assert(measured.max_internal_budget >= measured.min_internal_budget);
 
     return 0;
 }

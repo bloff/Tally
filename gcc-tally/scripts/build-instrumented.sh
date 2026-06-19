@@ -15,7 +15,7 @@ fi
 mkdir -p "$(dirname "${OUTPUT_FILE}")"
 
 INSTRUMENT_FLAGS="-ffixed-r15 -I${REPO_ROOT}/include -fplugin=${REPO_ROOT}/bin/gcc-tally.so -nostdlib -g -W"
-MINITHREAD_FLAGS="-L${REPO_ROOT}/bin -l:minithread.a"
+MINITHREAD_FLAGS="-L${REPO_ROOT}/bin -l:minithread.a -lm"
 LINK_FLAGS="-Wl,-R -Wl,. -Wl,--export-dynamic"
 
 gcc -fno-pie $INSTRUMENT_FLAGS -fPIC -shared -fPIC $LINK_FLAGS $MINITHREAD_FLAGS "${SOURCE_FILE}" -o "${OUTPUT_FILE}"

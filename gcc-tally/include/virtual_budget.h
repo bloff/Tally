@@ -22,14 +22,34 @@ typedef struct tally_virtual_calibration {
     int64_t max_internal_budget;
 } TallyVirtualCalibration;
 
+typedef struct tally_virtual_calibration_config {
+    double target_seconds;
+    uint64_t work_per_sample;
+    uint64_t stack_words;
+} TallyVirtualCalibrationConfig;
+
+typedef struct tally_virtual_adaptive_state {
+    double smoothing;
+    double min_observation_seconds;
+    double accumulated_observed_seconds;
+    uint64_t accumulated_budget_units;
+    uint64_t accumulated_activations;
+    uint64_t accumulated_scheduler_rounds;
+    uint64_t observations;
+    uint64_t updates;
+    double last_sample_seconds_per_budget_unit;
+} TallyVirtualAdaptiveState;
+
 typedef struct tally_virtual_thread {
     Minithread thread;
     double cpu_share;
     double credit_seconds;
     int64_t last_budget;
+    int64_t last_budget_units_consumed;
     uint64_t activations;
     uint64_t skipped_cycles;
     uint64_t completed_cycles;
+    uint64_t budget_units_consumed;
 } TallyVirtualThread;
 
 typedef enum tally_virtual_run_result {
@@ -40,6 +60,19 @@ typedef enum tally_virtual_run_result {
 } TallyVirtualRunResult;
 
 TallyVirtualCalibration tally_virtual_default_calibration(void);
+TallyVirtualCalibrationConfig tally_virtual_default_calibration_config(void);
+int tally_virtual_calibrate(
+    const TallyVirtualCalibrationConfig *config,
+    TallyVirtualCalibration *calibration
+);
+int tally_virtual_calibration_write_file(
+    const char *path,
+    const TallyVirtualCalibration *calibration
+);
+int tally_virtual_calibration_read_file(
+    const char *path,
+    TallyVirtualCalibration *calibration
+);
 double tally_virtual_context_switch_budget_units(const TallyVirtualCalibration *calibration);
 double tally_virtual_scheduler_round_budget_units(const TallyVirtualCalibration *calibration);
 int64_t tally_virtual_budget_from_seconds(const TallyVirtualCalibration *calibration, double credit_seconds);
@@ -54,6 +87,16 @@ void tally_virtual_thread_charge_scheduler_round(
 TallyVirtualRunResult tally_virtual_thread_run_ready(
     TallyVirtualThread *virtual_thread,
     const TallyVirtualCalibration *calibration
+);
+
+void tally_virtual_adaptive_state_init(TallyVirtualAdaptiveState *state);
+void tally_virtual_adaptive_observe(
+    TallyVirtualAdaptiveState *state,
+    TallyVirtualCalibration *calibration,
+    double observed_seconds,
+    uint64_t budget_units_consumed,
+    uint64_t activations,
+    uint64_t scheduler_rounds
 );
 
 #if __cplusplus
