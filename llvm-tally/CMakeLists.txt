@@ -35,6 +35,7 @@ set(LLVM_TALLY_STD_VEC_HOST_OUTPUT "${LLVM_TALLY_BIN_DIR}/llvm-tally-std-vec-hos
 add_library(tally_abi_bridge SHARED
     std/abi/tally_abi_bridge.c
 )
+target_link_libraries(tally_abi_bridge PRIVATE ${CMAKE_DL_LIBS})
 set_target_properties(tally_abi_bridge PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${LLVM_TALLY_BIN_DIR}"
 )

@@ -20,10 +20,19 @@ pub unsafe extern "C" fn run_std_vec_workload(args: *mut c_void) {
     }
     values.sort_unstable();
 
+    let mut bytes = Vec::with_capacity(args.target_len as usize);
+    for i in 0..args.target_len {
+        bytes.push((i as u8).wrapping_mul(31).wrapping_add(7));
+    }
+    let byte_sum = bytes
+        .iter()
+        .copied()
+        .fold(0_u64, |acc, value| acc.wrapping_add(value as u64));
+
     let boxed: Box<[u64]> = values.into_boxed_slice();
     args.len = boxed.len() as u64;
     args.sum = boxed
         .iter()
         .copied()
-        .fold(0_u64, |acc, value| acc.wrapping_add(value));
+        .fold(byte_sum, |acc, value| acc.wrapping_add(value));
 }

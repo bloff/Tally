@@ -14,6 +14,12 @@ struct StdVecArgs {
     len: u64,
 }
 
+#[derive(Clone, Copy)]
+enum HeapSetting {
+    Limited(usize),
+    Unlimited,
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
     let workload = PathBuf::from(args.get(1).cloned().unwrap_or_else(|| {
@@ -24,6 +30,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let budget = parse_arg(&args, 4, 10_000_i64);
     let abi_bridge = args.get(5).map(PathBuf::from);
     let rounds = parse_arg(&args, 6, 1_usize);
+    let heap_setting = parse_heap_setting(args.get(7).map(String::as_str))?;
 
     let mut manager = TallyManager::new();
     let std_environment = abi_bridge
@@ -31,7 +38,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(|bridge| manager.create_std_environment(bridge))
         .transpose()?;
 
-    println!("round,thread,target_len,len,sum,charges,state,error");
+    println!(
+        "round,thread,target_len,len,sum,charges,state,error,heap_limit_bytes,heap_unlimited,heap_peak_live_bytes,allocations,allocation_failures"
+    );
     for round in 0..rounds {
         let entry = match std_environment {
             Some(environment_id) => manager.load_function_in_std_environment(
@@ -54,11 +63,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut thread_ids = Vec::with_capacity(thread_count);
 
         for args in &mut workload_args {
+            let limits = match heap_setting {
+                HeapSetting::Limited(heap_bytes) => MemoryLimits::new(512 * 1024, heap_bytes),
+                HeapSetting::Unlimited => MemoryLimits::unlimited_heap(512 * 1024),
+            };
             thread_ids.push(manager.spawn_with_limits(
                 entry,
                 &mut **args as *mut StdVecArgs as *mut c_void,
                 budget,
-                MemoryLimits::new(512 * 1024, 0),
+                limits,
             )?);
         }
 
@@ -84,8 +97,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         for (index, args) in workload_args.iter().enumerate() {
             let stats = manager.stats_for_thread(thread_ids[index])?;
+            let memory = manager.memory_stats_for_thread(thread_ids[index])?;
             println!(
-                "{},{},{},{},{},{},{:?},{:?}",
+                "{},{},{},{},{},{},{:?},{:?},{},{},{},{},{}",
                 round,
                 index,
                 args.target_len,
@@ -93,7 +107,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 args.sum,
                 stats.charges,
                 stats.state,
-                stats.error
+                stats.error,
+                memory.heap_limit_bytes,
+                u8::from(memory.heap_unlimited),
+                memory.heap_peak_live_bytes,
+                memory.allocations,
+                memory.allocation_failures
             );
         }
 
@@ -103,6 +122,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+fn parse_heap_setting(value: Option<&str>) -> Result<HeapSetting, Box<dyn Error>> {
+    let Some(value) = value else {
+        return Ok(HeapSetting::Unlimited);
+    };
+    if value.eq_ignore_ascii_case("unlimited") {
+        return Ok(HeapSetting::Unlimited);
+    }
+
+    let bytes = value.parse::<usize>()?;
+    Ok(HeapSetting::Limited(bytes))
 }
 
 fn parse_arg<T>(args: &[String], index: usize, fallback: T) -> T

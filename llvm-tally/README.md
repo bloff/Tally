@@ -45,10 +45,14 @@ and `target_edges`.
 ## Memory Limits
 
 `TallyManager::spawn_with_limits` accepts `MemoryLimits` with separate stack and
-heap byte limits. Stacks are mapped with guard pages, `__tally_charge` records
-stack usage and catches cooperative soft overflow, and guard-page faults from a
-running minithread are converted into scheduler-visible `ThreadState::Errored`
-results.
+heap controls. `MemoryLimits::new(stack_bytes, heap_bytes)` gives the
+minithread a fixed per-minithread heap, `MemoryLimits::stack_only(stack_bytes)`
+keeps heap allocation unavailable, and
+`MemoryLimits::unlimited_heap(stack_bytes)` delegates heap allocation to the
+host allocator while still tracking live and peak bytes. Stacks are mapped with
+guard pages, `__tally_charge` records stack usage and catches cooperative soft
+overflow, and guard-page faults from a running minithread are converted into
+scheduler-visible `ThreadState::Errored` results.
 
 The runtime also exports direct heap hooks:
 
@@ -58,6 +62,14 @@ void   __tally_dealloc(void *ptr, uint64_t size, uint64_t align);
 void * __tally_realloc(void *ptr, uint64_t old_size, uint64_t align, uint64_t new_size);
 ```
 
-These hooks use a simple per-minithread bump heap for now. Rust `std`
-allocation paths such as `Vec` and `Box` are not routed through this heap yet;
-that belongs to the future standard-library/global-allocator phase.
+For fixed heap budgets these hooks use a simple per-minithread bump heap. Heap
+exhaustion records `ThreadError::HeapLimit` on only the offending minithread and
+returns control to the scheduler. For unlimited heaps, the same hooks delegate
+to the app's allocator.
+
+Std-using workloads loaded through `std/abi/libtally_abi_bridge.so` also route
+allocator symbols such as `malloc`, `calloc`, `realloc`, `free`, and
+`__rust_alloc*` through these hooks. That means `Vec`, `Box`, `String`, and
+ordinary Rust `std` allocation in an instrumented workload are charged against
+the current minithread's fixed heap, or use the app heap when that minithread
+was created with `MemoryLimits::unlimited_heap`.

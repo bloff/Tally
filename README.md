@@ -30,6 +30,11 @@ cmake --build /tmp/tally-llvm-build
 ctest --test-dir /tmp/tally-llvm-build --output-on-failure
 ```
 
+Minithreads can be spawned with CPU budgets plus memory limits. Stack limits are
+guarded, fixed heap limits are enforced per minithread, and std workloads loaded
+through the Tally std namespace can either use that fixed heap or opt into an
+unlimited heap that delegates to the app allocator.
+
 ## Workload Pipeline
 
 The no-std Rust workload pipeline can be run manually:

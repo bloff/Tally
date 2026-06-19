@@ -29,9 +29,9 @@ rustc itself.
   failures mark only the offending minithread `Errored` and the scheduler can
   continue running healthy minithreads.
 - `std/abi/`: tiny C ABI bridge built as `libtally_abi_bridge.so`. Std-using
-  workloads link against this bridge so `__tally_charge` and future allocation
-  hooks resolve inside a `dlmopen` namespace instead of the manager's base
-  namespace.
+  workloads link against this bridge so `__tally_charge` and allocator symbols
+  such as `malloc`, `free`, and `__rust_alloc*` resolve inside a `dlmopen`
+  namespace instead of the manager's base namespace.
 - `std/scripts/`: local-Rust-source tooling that builds and instruments a
   private std sysroot, then compiles std-using workloads against it.
 - `std/examples/std-vec-*`: first std-heavy workload and host pair. The workload
@@ -73,13 +73,22 @@ Guard-page `SIGSEGV` faults from the currently running minithread are handled on
 an alternate signal stack, recognized as stack faults, and switched back to the
 scheduler instead of terminating the host process.
 
-The heap path is currently explicit rather than transparent. Instrumented
-workloads can call `__tally_alloc`, `__tally_dealloc`, and `__tally_realloc` to
-allocate from a simple per-minithread bump heap. Heap exhaustion records a
-`HeapLimit` error and yields to the scheduler. The namespace bridge exports the
-same allocation hooks for future instrumented/pruned `std` allocator work, but
-ordinary Rust `std` allocation paths such as `Vec`, `Box`, or `String` still use
-Rust's normal allocator in the current prototype.
+Each minithread can have either a fixed heap budget or an unlimited heap.
+`MemoryLimits::new(stack_bytes, heap_bytes)` creates a fixed per-minithread bump
+heap, `MemoryLimits::stack_only(stack_bytes)` makes heap allocation fail, and
+`MemoryLimits::unlimited_heap(stack_bytes)` delegates allocation to the app's
+allocator while still tracking live bytes, peak live bytes, and allocation
+counts. Fixed heap exhaustion records a `HeapLimit` error and yields to the
+scheduler.
+
+Controlled no-std workloads can call `__tally_alloc`, `__tally_dealloc`, and
+`__tally_realloc` directly. Std-using workloads go through the namespace bridge:
+`libtally_abi_bridge.so` interposes libc-style allocator symbols plus the Rust
+allocator ABI, stores a small header beside each allocation, and forwards the
+request to the current minithread's heap hooks in the manager. As a result,
+`Vec`, `Box`, `String`, and similar std allocation are now charged against the
+current minithread heap when the workload is loaded through a Tally std
+environment.
 
 ## Performance Workload
 
@@ -100,6 +109,7 @@ keeps graph work inside instrumented code.
   not a Cargo-native replacement toolchain.
 - The per-minithread heap is a bump allocator; freed blocks are accounted for
   but not reused yet.
-- Rust `std` allocation is not yet redirected to the per-minithread heap.
+- The std allocator bridge interposes normal allocation paths, but it does not
+  yet intercept direct large-allocation system calls such as `mmap`.
 - The pass uses a simple LLVM IR instruction cost model rather than a calibrated
   machine-instruction model.

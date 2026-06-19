@@ -202,21 +202,28 @@ pub enum ThreadError {
 #[derive(Debug, Clone, Copy)]
 pub struct MemoryLimits {
     pub stack_bytes: usize,
-    pub heap_bytes: usize,
+    pub heap_bytes: Option<usize>,
 }
 
 impl MemoryLimits {
     pub fn new(stack_bytes: usize, heap_bytes: usize) -> Self {
         Self {
             stack_bytes,
-            heap_bytes,
+            heap_bytes: Some(heap_bytes),
         }
     }
 
     pub fn stack_only(stack_bytes: usize) -> Self {
         Self {
             stack_bytes,
-            heap_bytes: 0,
+            heap_bytes: Some(0),
+        }
+    }
+
+    pub fn unlimited_heap(stack_bytes: usize) -> Self {
+        Self {
+            stack_bytes,
+            heap_bytes: None,
         }
     }
 }
@@ -228,6 +235,7 @@ pub struct MemoryStats {
     pub stack_peak_bytes: usize,
     pub stack_overflowed: bool,
     pub heap_limit_bytes: usize,
+    pub heap_unlimited: bool,
     pub heap_live_bytes: usize,
     pub heap_peak_live_bytes: usize,
     pub heap_committed_bytes: usize,
@@ -328,6 +336,7 @@ struct TallyStack {
 
 struct TallyHeap {
     arena: Option<MmapRegion>,
+    unlimited: bool,
     offset: usize,
     live_bytes: usize,
     peak_live_bytes: usize,
@@ -1266,19 +1275,23 @@ impl Drop for TallyStack {
 }
 
 impl TallyHeap {
-    fn new(limit_bytes: usize) -> Result<Self, TallyError> {
-        let arena = if limit_bytes == 0 {
-            None
-        } else {
-            Some(MmapRegion::map(
-                page_align(limit_bytes)?,
-                PROT_READ | PROT_WRITE,
-                0,
-            )?)
+    fn new(limit_bytes: Option<usize>) -> Result<Self, TallyError> {
+        let (arena, unlimited) = match limit_bytes {
+            Some(0) => (None, false),
+            Some(limit_bytes) => (
+                Some(MmapRegion::map(
+                    page_align(limit_bytes)?,
+                    PROT_READ | PROT_WRITE,
+                    0,
+                )?),
+                false,
+            ),
+            None => (None, true),
         };
 
         Ok(Self {
             arena,
+            unlimited,
             offset: 0,
             live_bytes: 0,
             peak_live_bytes: 0,
@@ -1292,6 +1305,10 @@ impl TallyHeap {
         self.arena.as_ref().map(|arena| arena.len).unwrap_or(0)
     }
 
+    fn is_unlimited(&self) -> bool {
+        self.unlimited
+    }
+
     fn committed_bytes(&self) -> usize {
         self.offset
     }
@@ -1300,6 +1317,18 @@ impl TallyHeap {
         if size == 0 || !align.is_power_of_two() {
             self.allocation_failures = self.allocation_failures.saturating_add(1);
             return Err(ThreadError::InvalidAllocationRequest);
+        }
+
+        if self.unlimited {
+            let ptr = host_alloc(size, align);
+            if ptr.is_null() {
+                self.allocation_failures = self.allocation_failures.saturating_add(1);
+                return Err(ThreadError::HeapLimit);
+            }
+            self.live_bytes = self.live_bytes.saturating_add(size);
+            self.peak_live_bytes = self.peak_live_bytes.max(self.live_bytes);
+            self.allocations = self.allocations.saturating_add(1);
+            return Ok(ptr);
         }
 
         let Some(arena) = self.arena.as_mut() else {
@@ -1334,6 +1363,9 @@ impl TallyHeap {
         }
         self.deallocations = self.deallocations.saturating_add(1);
         self.live_bytes = self.live_bytes.saturating_sub(size);
+        if self.unlimited {
+            host_dealloc(ptr, size, _align);
+        }
     }
 
     unsafe fn realloc(
@@ -1345,6 +1377,24 @@ impl TallyHeap {
     ) -> Result<*mut c_void, ThreadError> {
         if ptr.is_null() {
             return self.alloc(new_size, align);
+        }
+        if new_size == 0 {
+            self.dealloc(ptr, old_size, align);
+            return Ok(ptr::null_mut());
+        }
+
+        if self.unlimited {
+            let new_ptr = host_realloc(ptr, old_size, align, new_size);
+            if new_ptr.is_null() {
+                self.allocation_failures = self.allocation_failures.saturating_add(1);
+                return Err(ThreadError::HeapLimit);
+            }
+            self.live_bytes = self.live_bytes.saturating_sub(old_size);
+            self.live_bytes = self.live_bytes.saturating_add(new_size);
+            self.peak_live_bytes = self.peak_live_bytes.max(self.live_bytes);
+            self.allocations = self.allocations.saturating_add(1);
+            self.deallocations = self.deallocations.saturating_add(1);
+            return Ok(new_ptr);
         }
 
         let new_ptr = self.alloc(new_size, align)?;
@@ -1557,6 +1607,7 @@ impl TallyThread {
             stack_peak_bytes: self.stack.peak_bytes,
             stack_overflowed: self.stack.overflowed,
             heap_limit_bytes: self.heap.limit_bytes(),
+            heap_unlimited: self.heap.is_unlimited(),
             heap_live_bytes: self.heap.live_bytes,
             heap_peak_live_bytes: self.heap.peak_live_bytes,
             heap_committed_bytes: self.heap.committed_bytes(),
@@ -2117,6 +2168,38 @@ mod tests {
 
         let memory = manager.memory_stats_for_thread(id).unwrap();
         assert_eq!(memory.heap_limit_bytes, 4096);
+        assert!(!memory.heap_unlimited);
+        assert_eq!(memory.heap_live_bytes, 0);
+        assert_eq!(memory.heap_peak_live_bytes, 256);
+        assert_eq!(memory.allocations, 1);
+        assert_eq!(memory.deallocations, 1);
+        assert_eq!(memory.allocation_failures, 0);
+        assert_eq!(memory.error, None);
+    }
+
+    #[test]
+    fn unlimited_heap_delegates_to_host_allocator_and_tracks_usage() {
+        let mut manager = TallyManager::new();
+        let mut args = HeapProbeArgs {
+            writes: 0,
+            observed_null: 0,
+        };
+        let id = manager
+            .spawn_with_limits(
+                heap_allocates_and_frees,
+                &mut args as *mut HeapProbeArgs as *mut c_void,
+                10,
+                MemoryLimits::unlimited_heap(65_536),
+            )
+            .unwrap();
+
+        assert_eq!(manager.run_cycle(id).unwrap(), ThreadState::Returned);
+        assert_eq!(args.writes, 256);
+        assert_eq!(args.observed_null, 0);
+
+        let memory = manager.memory_stats_for_thread(id).unwrap();
+        assert_eq!(memory.heap_limit_bytes, 0);
+        assert!(memory.heap_unlimited);
         assert_eq!(memory.heap_live_bytes, 0);
         assert_eq!(memory.heap_peak_live_bytes, 256);
         assert_eq!(memory.allocations, 1);
@@ -2155,6 +2238,7 @@ mod tests {
         let failing_stats = manager.stats_for_thread(failing).unwrap();
         assert_eq!(failing_stats.error, Some(ThreadError::HeapLimit));
         let failing_memory = manager.memory_stats_for_thread(failing).unwrap();
+        assert!(!failing_memory.heap_unlimited);
         assert_eq!(failing_memory.allocation_failures, 1);
         assert_eq!(failing_memory.error, Some(ThreadError::HeapLimit));
 

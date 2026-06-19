@@ -25,9 +25,13 @@ The local `rustc` rejects direct `-load-pass-plugin` injection through
 The ABI bridge is loaded with `dlmopen` into a dedicated linker namespace for
 the instrumented std profile. The host manager keeps using the process's normal
 Rust `std` in the base namespace, while workloads loaded into the std namespace
-resolve `__tally_charge` and future allocation hooks through the bridge. Many
-workloads can share the same std namespace; the design does not allocate one
-namespace per workload.
+resolve `__tally_charge` and allocator symbols through the bridge. The bridge
+interposes libc-style allocation entrypoints (`malloc`, `calloc`, `realloc`,
+`free`, `posix_memalign`, `aligned_alloc`) plus Rust allocator ABI symbols
+(`__rust_alloc`, `__rust_dealloc`, `__rust_realloc`, `__rust_alloc_zeroed`).
+Those calls are forwarded to the current minithread's heap hooks. Many workloads
+can share the same std namespace; the design does not allocate one namespace per
+workload.
 
 The normal build path is:
 
@@ -54,17 +58,22 @@ WORKLOAD_SO="$(llvm-tally/std/scripts/build-std-workload.sh \
   /tmp/tally-llvm-build/bin/libtally_abi_bridge.so)"
 /tmp/tally-llvm-build/bin/llvm-tally-std-vec-host \
   "${WORKLOAD_SO}" 4 512 10000 \
-  /tmp/tally-llvm-build/bin/libtally_abi_bridge.so
+  /tmp/tally-llvm-build/bin/libtally_abi_bridge.so \
+  65536
 ```
 
 The host creates one std environment, loads the workload into that namespace,
 runs it as Tally minithreads, and can unload namespace-local workload handles
-after all minithreads are returned or errored.
+after all minithreads are returned or errored. The final argument is optional:
+an integer gives each minithread a fixed heap budget in bytes, while
+`unlimited` makes each minithread use the app's heap. If the argument is
+omitted, the std host defaults to `unlimited`.
 
 Fast CI coverage is provided by `llvm_std_tooling_smoke`, which checks source
 metadata generation, pass-injection probing, and clean prerequisite reporting
 without requiring a full std build. `llvm_abi_bridge_symbols` verifies that the
-bridge exports the namespace ABI required by instrumented workloads.
+bridge exports the namespace CPU and allocation ABI required by instrumented
+workloads.
 
 The full local-std workload smoke is intentionally opt-in because it rebuilds
 local std and takes tens of seconds:
@@ -75,5 +84,5 @@ ctest --test-dir /tmp/tally-llvm-build --output-on-failure -R llvm_std_workload_
 ```
 
 The slow smoke test rebuilds local std, checks that the workload has a
-`DT_NEEDED` dependency on `libtally_abi_bridge.so`, then runs two
-load/run/unload rounds through the namespace-aware host.
+`DT_NEEDED` dependency on `libtally_abi_bridge.so`, then runs fixed-heap,
+too-small-heap, and unlimited-heap rounds through the namespace-aware host.

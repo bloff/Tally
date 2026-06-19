@@ -23,7 +23,17 @@ for symbol in \
     __tally_charge \
     __tally_alloc \
     __tally_dealloc \
-    __tally_realloc
+    __tally_realloc \
+    malloc \
+    calloc \
+    realloc \
+    free \
+    posix_memalign \
+    aligned_alloc \
+    __rust_alloc \
+    __rust_dealloc \
+    __rust_realloc \
+    __rust_alloc_zeroed
 do
     if ! printf '%s\n' "${SYMBOLS}" | grep -Eq "[[:space:]]${symbol}$"; then
         echo "ABI bridge does not export ${symbol}" >&2
