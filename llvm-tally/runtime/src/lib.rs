@@ -2,7 +2,8 @@
  * Rust minithread runtime for llvm-tally. It provides stackful context
  * switching, dynamic loading, work accounting, and the __tally_charge C ABI.
  */
-use core::arch::global_asm;
+use core::arch::{asm, global_asm};
+use std::cell::Cell;
 use std::error::Error;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::fmt;
@@ -10,6 +11,9 @@ use std::fs;
 use std::mem;
 use std::path::Path;
 use std::ptr;
+use std::ptr::NonNull;
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::Once;
 use std::time::Instant;
 
 global_asm!(
@@ -51,12 +55,78 @@ unsafe extern "C" {
     fn dlerror() -> *const c_char;
 }
 
+unsafe extern "C" {
+    fn mmap(
+        addr: *mut c_void,
+        length: usize,
+        prot: c_int,
+        flags: c_int,
+        fd: c_int,
+        offset: isize,
+    ) -> *mut c_void;
+    fn mprotect(addr: *mut c_void, length: usize, prot: c_int) -> c_int;
+    fn munmap(addr: *mut c_void, length: usize) -> c_int;
+    fn sigaction(signum: c_int, act: *const SigAction, oldact: *mut SigAction) -> c_int;
+    fn sigaltstack(ss: *const StackT, old_ss: *mut StackT) -> c_int;
+    fn raise(signum: c_int) -> c_int;
+    fn signal(signum: c_int, handler: usize) -> usize;
+    fn _exit(status: c_int) -> !;
+}
+
 const RTLD_NOW: c_int = 2;
 const RTLD_GLOBAL: c_int = 0x100;
+const PROT_NONE: c_int = 0;
+const PROT_READ: c_int = 1;
+const PROT_WRITE: c_int = 2;
+const MAP_PRIVATE: c_int = 0x02;
+const MAP_ANONYMOUS: c_int = 0x20;
+const MAP_STACK: c_int = 0x20000;
+const MAP_FAILED: *mut c_void = !0_usize as *mut c_void;
+const SIGSEGV: c_int = 11;
+const SIG_DFL: usize = 0;
+const SA_SIGINFO: c_int = 0x00000004;
+const SA_ONSTACK: c_int = 0x08000000;
+const SA_NODEFER: c_int = 0x40000000;
+const PAGE_SIZE: usize = 4096;
+const SIGNAL_STACK_SIZE: usize = 64 * 1024;
+const MIN_STACK_SIZE: usize = 4096;
+const DEFAULT_STACK_GUARD_SIZE: usize = 64 * 1024;
 const DEFAULT_STACK_SIZE: usize = 1024 * 1024;
 const CALIBRATION_FILE_HEADER: &str = "tally_virtual_calibration_v1";
 const CALIBRATION_BUDGETS: [i64; 4] = [50, 100, 500, 1000];
 const CALIBRATION_THREAD_COUNTS: [usize; 4] = [1, 2, 5, 10];
+
+#[repr(C)]
+struct SigAction {
+    sa_sigaction: usize,
+    sa_mask: [u64; 16],
+    sa_flags: c_int,
+    sa_restorer: usize,
+}
+
+#[repr(C)]
+struct SigInfo {
+    si_signo: c_int,
+    si_errno: c_int,
+    si_code: c_int,
+    _pad: c_int,
+    si_addr: *mut c_void,
+    _rest: [u8; 104],
+}
+
+#[repr(C)]
+struct StackT {
+    ss_sp: *mut c_void,
+    ss_flags: c_int,
+    ss_size: usize,
+}
+
+static SIGNAL_HANDLER_ONCE: Once = Once::new();
+static SIGNAL_HANDLER_STATUS: AtomicI32 = AtomicI32::new(1);
+
+thread_local! {
+    static ALT_SIGNAL_STACK: Cell<*mut c_void> = const { Cell::new(ptr::null_mut()) };
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -102,15 +172,64 @@ pub enum ThreadState {
 
 pub type TallyEntry = unsafe extern "C" fn(*mut c_void);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadError {
+    StackSoftLimit,
+    StackGuardFault,
+    HeapLimit,
+    InvalidAllocationRequest,
+    SchedulerUnavailable,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryLimits {
+    pub stack_bytes: usize,
+    pub heap_bytes: usize,
+}
+
+impl MemoryLimits {
+    pub fn new(stack_bytes: usize, heap_bytes: usize) -> Self {
+        Self {
+            stack_bytes,
+            heap_bytes,
+        }
+    }
+
+    pub fn stack_only(stack_bytes: usize) -> Self {
+        Self {
+            stack_bytes,
+            heap_bytes: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryStats {
+    pub stack_limit_bytes: usize,
+    pub stack_used_bytes: usize,
+    pub stack_peak_bytes: usize,
+    pub stack_overflowed: bool,
+    pub heap_limit_bytes: usize,
+    pub heap_live_bytes: usize,
+    pub heap_peak_live_bytes: usize,
+    pub heap_committed_bytes: usize,
+    pub allocations: u64,
+    pub deallocations: u64,
+    pub allocation_failures: u64,
+    pub error: Option<ThreadError>,
+}
+
 pub struct TallyThread {
     id: usize,
     context: Context,
-    stack: Vec<u8>,
+    stack: TallyStack,
+    heap: TallyHeap,
     entry: TallyEntry,
     arg: *mut c_void,
     budget_per_cycle: i64,
     remaining_budget: i64,
     state: ThreadState,
+    error: Option<ThreadError>,
     cycles_run: u64,
     charges: u64,
     work_units: u64,
@@ -125,6 +244,7 @@ pub struct ThreadStats {
     pub cycles_run: u64,
     pub charges: u64,
     pub work_units: u64,
+    pub error: Option<ThreadError>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -177,6 +297,32 @@ pub struct VirtualThread {
     pub budget_units_consumed: u64,
 }
 
+struct TallyStack {
+    mapping_base: NonNull<u8>,
+    mapping_len: usize,
+    usable_base: NonNull<u8>,
+    usable_len: usize,
+    guard_low_len: usize,
+    guard_high_len: usize,
+    peak_bytes: usize,
+    overflowed: bool,
+}
+
+struct TallyHeap {
+    arena: Option<MmapRegion>,
+    offset: usize,
+    live_bytes: usize,
+    peak_live_bytes: usize,
+    allocations: u64,
+    deallocations: u64,
+    allocation_failures: u64,
+}
+
+struct MmapRegion {
+    base: NonNull<u8>,
+    len: usize,
+}
+
 pub struct TallyManager {
     scheduler_context: Context,
     threads: Vec<Box<TallyThread>>,
@@ -226,18 +372,28 @@ impl TallyManager {
         budget_per_cycle: i64,
         stack_size: usize,
     ) -> Result<usize, TallyError> {
-        if budget_per_cycle <= 0 {
-            return Err(TallyError::new("budget_per_cycle must be positive"));
-        }
-
-        let id = self.threads.len();
-        let thread = Box::new(TallyThread::new(
-            id,
+        self.spawn_with_limits(
             entry,
             arg,
             budget_per_cycle,
-            stack_size,
-        )?);
+            MemoryLimits::stack_only(stack_size),
+        )
+    }
+
+    pub fn spawn_with_limits(
+        &mut self,
+        entry: TallyEntry,
+        arg: *mut c_void,
+        budget_per_cycle: i64,
+        limits: MemoryLimits,
+    ) -> Result<usize, TallyError> {
+        if budget_per_cycle <= 0 {
+            return Err(TallyError::new("budget_per_cycle must be positive"));
+        }
+        ensure_memory_signal_support()?;
+
+        let id = self.threads.len();
+        let thread = Box::new(TallyThread::new(id, entry, arg, budget_per_cycle, limits)?);
         self.threads.push(thread);
         Ok(id)
     }
@@ -319,6 +475,13 @@ impl TallyManager {
 
     pub fn stats(&self) -> Vec<ThreadStats> {
         self.threads.iter().map(|thread| thread.stats()).collect()
+    }
+
+    pub fn memory_stats_for_thread(&self, id: usize) -> Result<MemoryStats, TallyError> {
+        self.threads
+            .get(id)
+            .map(|thread| thread.memory_stats())
+            .ok_or_else(|| TallyError::new(format!("unknown thread id {id}")))
     }
 }
 
@@ -915,20 +1078,352 @@ fn parse_i64(value: &str, key: &str) -> Result<i64, TallyError> {
         .map_err(|err| TallyError::new(format!("invalid {key}: {err}")))
 }
 
+impl TallyStack {
+    fn new(stack_size: usize) -> Result<Self, TallyError> {
+        if stack_size < MIN_STACK_SIZE {
+            return Err(TallyError::new(format!(
+                "stack_size must be at least {MIN_STACK_SIZE} bytes"
+            )));
+        }
+
+        let usable_len = page_align(stack_size)?;
+        let guard_low_len = page_align(DEFAULT_STACK_GUARD_SIZE.max(usable_len.min(64 * 1024)))?;
+        let guard_high_len = PAGE_SIZE;
+        let mapping_len = guard_low_len
+            .checked_add(usable_len)
+            .and_then(|len| len.checked_add(guard_high_len))
+            .ok_or_else(|| TallyError::new("stack mapping size overflow"))?;
+        let region = MmapRegion::map(mapping_len, PROT_READ | PROT_WRITE, MAP_STACK)?;
+
+        unsafe {
+            protect_region(region.base.as_ptr(), guard_low_len, PROT_NONE)?;
+            protect_region(
+                region.base.as_ptr().add(guard_low_len + usable_len),
+                guard_high_len,
+                PROT_NONE,
+            )?;
+        }
+
+        let usable_base =
+            unsafe { NonNull::new_unchecked(region.base.as_ptr().add(guard_low_len)) };
+        let mapping_base = region.base;
+        mem::forget(region);
+
+        Ok(Self {
+            mapping_base,
+            mapping_len,
+            usable_base,
+            usable_len,
+            guard_low_len,
+            guard_high_len,
+            peak_bytes: 0,
+            overflowed: false,
+        })
+    }
+
+    fn usable_high(&self) -> usize {
+        self.usable_base.as_ptr() as usize + self.usable_len
+    }
+
+    fn usable_low(&self) -> usize {
+        self.usable_base.as_ptr() as usize
+    }
+
+    fn soft_slop(&self) -> usize {
+        PAGE_SIZE.min(self.usable_len / 4).max(512)
+    }
+
+    fn current_used_from_saved_context(&self, rsp: usize) -> usize {
+        self.used_from_rsp(rsp)
+    }
+
+    fn observe_stack_pointer(&mut self, rsp: usize) -> bool {
+        let used = self.used_from_rsp(rsp);
+        self.peak_bytes = self.peak_bytes.max(used);
+
+        let soft_low = self.usable_low().saturating_add(self.soft_slop());
+        if rsp < soft_low || rsp > self.usable_high() {
+            self.overflowed = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn used_from_rsp(&self, rsp: usize) -> usize {
+        let high = self.usable_high();
+        let low = self.usable_low();
+        if rsp >= high {
+            0
+        } else if rsp <= low {
+            self.usable_len
+        } else {
+            high - rsp
+        }
+    }
+
+    fn contains_guard_fault(&self, fault_addr: usize) -> bool {
+        let base = self.mapping_base.as_ptr() as usize;
+        let low_guard_end = base + self.guard_low_len;
+        let high_guard_start = self.usable_high();
+        let high_guard_end = high_guard_start + self.guard_high_len;
+
+        (fault_addr >= base && fault_addr < low_guard_end)
+            || (fault_addr >= high_guard_start && fault_addr < high_guard_end)
+    }
+}
+
+impl Drop for TallyStack {
+    fn drop(&mut self) {
+        unsafe {
+            munmap(self.mapping_base.as_ptr() as *mut c_void, self.mapping_len);
+        }
+    }
+}
+
+impl TallyHeap {
+    fn new(limit_bytes: usize) -> Result<Self, TallyError> {
+        let arena = if limit_bytes == 0 {
+            None
+        } else {
+            Some(MmapRegion::map(
+                page_align(limit_bytes)?,
+                PROT_READ | PROT_WRITE,
+                0,
+            )?)
+        };
+
+        Ok(Self {
+            arena,
+            offset: 0,
+            live_bytes: 0,
+            peak_live_bytes: 0,
+            allocations: 0,
+            deallocations: 0,
+            allocation_failures: 0,
+        })
+    }
+
+    fn limit_bytes(&self) -> usize {
+        self.arena.as_ref().map(|arena| arena.len).unwrap_or(0)
+    }
+
+    fn committed_bytes(&self) -> usize {
+        self.offset
+    }
+
+    unsafe fn alloc(&mut self, size: usize, align: usize) -> Result<*mut c_void, ThreadError> {
+        if size == 0 || !align.is_power_of_two() {
+            self.allocation_failures = self.allocation_failures.saturating_add(1);
+            return Err(ThreadError::InvalidAllocationRequest);
+        }
+
+        let Some(arena) = self.arena.as_mut() else {
+            self.allocation_failures = self.allocation_failures.saturating_add(1);
+            return Err(ThreadError::HeapLimit);
+        };
+
+        let aligned_offset = align_up(self.offset, align).ok_or_else(|| {
+            self.allocation_failures = self.allocation_failures.saturating_add(1);
+            ThreadError::HeapLimit
+        })?;
+        let end = aligned_offset.checked_add(size).ok_or_else(|| {
+            self.allocation_failures = self.allocation_failures.saturating_add(1);
+            ThreadError::HeapLimit
+        })?;
+
+        if end > arena.len {
+            self.allocation_failures = self.allocation_failures.saturating_add(1);
+            return Err(ThreadError::HeapLimit);
+        }
+
+        self.offset = end;
+        self.live_bytes = self.live_bytes.saturating_add(size);
+        self.peak_live_bytes = self.peak_live_bytes.max(self.live_bytes);
+        self.allocations = self.allocations.saturating_add(1);
+        Ok(arena.base.as_ptr().add(aligned_offset) as *mut c_void)
+    }
+
+    unsafe fn dealloc(&mut self, ptr: *mut c_void, size: usize, _align: usize) {
+        if ptr.is_null() {
+            return;
+        }
+        self.deallocations = self.deallocations.saturating_add(1);
+        self.live_bytes = self.live_bytes.saturating_sub(size);
+    }
+
+    unsafe fn realloc(
+        &mut self,
+        ptr: *mut c_void,
+        old_size: usize,
+        align: usize,
+        new_size: usize,
+    ) -> Result<*mut c_void, ThreadError> {
+        if ptr.is_null() {
+            return self.alloc(new_size, align);
+        }
+
+        let new_ptr = self.alloc(new_size, align)?;
+        ptr::copy_nonoverlapping(ptr as *const u8, new_ptr as *mut u8, old_size.min(new_size));
+        self.dealloc(ptr, old_size, align);
+        Ok(new_ptr)
+    }
+}
+
+impl MmapRegion {
+    fn map(len: usize, prot: c_int, extra_flags: c_int) -> Result<Self, TallyError> {
+        if len == 0 {
+            return Err(TallyError::new("mmap length must be positive"));
+        }
+
+        let ptr = unsafe {
+            mmap(
+                ptr::null_mut(),
+                len,
+                prot,
+                MAP_PRIVATE | MAP_ANONYMOUS | extra_flags,
+                -1,
+                0,
+            )
+        };
+        if ptr == MAP_FAILED || ptr.is_null() {
+            return Err(TallyError::new("mmap failed"));
+        }
+
+        Ok(Self {
+            base: unsafe { NonNull::new_unchecked(ptr as *mut u8) },
+            len,
+        })
+    }
+}
+
+impl Drop for MmapRegion {
+    fn drop(&mut self) {
+        unsafe {
+            munmap(self.base.as_ptr() as *mut c_void, self.len);
+        }
+    }
+}
+
+fn page_align(size: usize) -> Result<usize, TallyError> {
+    align_up(size, PAGE_SIZE).ok_or_else(|| TallyError::new("page alignment overflow"))
+}
+
+fn align_up(value: usize, align: usize) -> Option<usize> {
+    let mask = align.checked_sub(1)?;
+    value.checked_add(mask).map(|value| value & !mask)
+}
+
+unsafe fn protect_region(ptr: *mut u8, len: usize, prot: c_int) -> Result<(), TallyError> {
+    if len == 0 {
+        return Ok(());
+    }
+    if mprotect(ptr as *mut c_void, len, prot) != 0 {
+        Err(TallyError::new("mprotect failed"))
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_memory_signal_support() -> Result<(), TallyError> {
+    SIGNAL_HANDLER_ONCE.call_once(|| {
+        let action = SigAction {
+            sa_sigaction: tally_sigsegv_handler as *const () as usize,
+            sa_mask: [0; 16],
+            sa_flags: SA_SIGINFO | SA_ONSTACK | SA_NODEFER,
+            sa_restorer: 0,
+        };
+        let status = unsafe { sigaction(SIGSEGV, &action, ptr::null_mut()) };
+        SIGNAL_HANDLER_STATUS.store(status, Ordering::SeqCst);
+    });
+
+    if SIGNAL_HANDLER_STATUS.load(Ordering::SeqCst) != 0 {
+        return Err(TallyError::new("failed to install SIGSEGV handler"));
+    }
+
+    install_alt_signal_stack_for_current_thread()
+}
+
+fn install_alt_signal_stack_for_current_thread() -> Result<(), TallyError> {
+    ALT_SIGNAL_STACK.with(|slot| {
+        if !slot.get().is_null() {
+            return Ok(());
+        }
+
+        let region = MmapRegion::map(SIGNAL_STACK_SIZE, PROT_READ | PROT_WRITE, 0)?;
+        let stack = StackT {
+            ss_sp: region.base.as_ptr() as *mut c_void,
+            ss_flags: 0,
+            ss_size: region.len,
+        };
+        if unsafe { sigaltstack(&stack, ptr::null_mut()) } != 0 {
+            return Err(TallyError::new("failed to install alternate signal stack"));
+        }
+
+        let ptr = region.base.as_ptr() as *mut c_void;
+        mem::forget(region);
+        slot.set(ptr);
+        Ok(())
+    })
+}
+
+unsafe extern "C" fn tally_sigsegv_handler(
+    signum: c_int,
+    info: *mut SigInfo,
+    _context: *mut c_void,
+) {
+    let fault_addr = if info.is_null() {
+        0
+    } else {
+        (*info).si_addr as usize
+    };
+    let thread = CURRENT_THREAD;
+    if !thread.is_null()
+        && (*thread).state == ThreadState::Running
+        && (*thread).stack.contains_guard_fault(fault_addr)
+    {
+        (*thread).stack.overflowed = true;
+        (*thread).stack.peak_bytes = (*thread).stack.usable_len;
+        (*thread).mark_errored(ThreadError::StackGuardFault);
+        yield_to_scheduler(thread);
+        _exit(128 + signum);
+    }
+
+    signal(signum, SIG_DFL);
+    raise(signum);
+    _exit(128 + signum);
+}
+
+#[inline(always)]
+fn current_stack_pointer() -> usize {
+    let rsp: usize;
+    unsafe {
+        asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags));
+    }
+    rsp
+}
+
+unsafe fn mark_current_thread_errored(error: ThreadError) {
+    let thread = CURRENT_THREAD;
+    if thread.is_null() {
+        return;
+    }
+    (*thread).mark_errored(error);
+    if !SCHEDULER_CONTEXT.is_null() {
+        yield_to_scheduler(thread);
+    }
+}
+
 impl TallyThread {
     fn new(
         id: usize,
         entry: TallyEntry,
         arg: *mut c_void,
         budget_per_cycle: i64,
-        stack_size: usize,
+        limits: MemoryLimits,
     ) -> Result<Self, TallyError> {
-        if stack_size < 4096 {
-            return Err(TallyError::new("stack_size must be at least 4096 bytes"));
-        }
-
-        let mut stack = vec![0_u8; stack_size];
-        let top = stack.as_mut_ptr() as usize + stack.len();
+        let stack = TallyStack::new(limits.stack_bytes)?;
+        let top = stack.usable_high();
         let aligned_top = top & !0xf;
         let initial_rsp = aligned_top
             .checked_sub(16)
@@ -945,11 +1440,13 @@ impl TallyThread {
                 ..Context::default()
             },
             stack,
+            heap: TallyHeap::new(limits.heap_bytes)?,
             entry,
             arg,
             budget_per_cycle,
             remaining_budget: 0,
             state: ThreadState::Ready,
+            error: None,
             cycles_run: 0,
             charges: 0,
             work_units: 0,
@@ -957,7 +1454,6 @@ impl TallyThread {
     }
 
     fn stats(&self) -> ThreadStats {
-        let _keep_stack_alive = self.stack.len();
         ThreadStats {
             id: self.id,
             budget_per_cycle: self.budget_per_cycle,
@@ -966,7 +1462,39 @@ impl TallyThread {
             cycles_run: self.cycles_run,
             charges: self.charges,
             work_units: self.work_units,
+            error: self.error,
         }
+    }
+
+    fn memory_stats(&self) -> MemoryStats {
+        MemoryStats {
+            stack_limit_bytes: self.stack.usable_len,
+            stack_used_bytes: self.stack.current_used_from_saved_context(self.context.rsp),
+            stack_peak_bytes: self.stack.peak_bytes,
+            stack_overflowed: self.stack.overflowed,
+            heap_limit_bytes: self.heap.limit_bytes(),
+            heap_live_bytes: self.heap.live_bytes,
+            heap_peak_live_bytes: self.heap.peak_live_bytes,
+            heap_committed_bytes: self.heap.committed_bytes(),
+            allocations: self.heap.allocations,
+            deallocations: self.heap.deallocations,
+            allocation_failures: self.heap.allocation_failures,
+            error: self.error,
+        }
+    }
+
+    unsafe fn observe_stack_pointer(&mut self, rsp: usize) -> bool {
+        if self.stack.observe_stack_pointer(rsp) {
+            self.mark_errored(ThreadError::StackSoftLimit);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn mark_errored(&mut self, error: ThreadError) {
+        self.error.get_or_insert(error);
+        self.state = ThreadState::Errored;
     }
 }
 
@@ -1026,6 +1554,12 @@ pub extern "C" fn __tally_charge(cost: u64) {
             return;
         }
 
+        let rsp = current_stack_pointer();
+        if (*thread).observe_stack_pointer(rsp) {
+            yield_to_scheduler(thread);
+            return;
+        }
+
         (*thread).charges = (*thread).charges.saturating_add(1);
         let cost = i64::try_from(cost).unwrap_or(i64::MAX);
         (*thread).remaining_budget = (*thread).remaining_budget.saturating_sub(cost);
@@ -1035,6 +1569,146 @@ pub extern "C" fn __tally_charge(cost: u64) {
             yield_to_scheduler(thread);
         }
     }
+}
+
+#[no_mangle]
+pub extern "C" fn __tally_alloc(size: u64, align: u64) -> *mut c_void {
+    let Some(size) = usize::try_from(size).ok() else {
+        unsafe {
+            mark_current_thread_errored(ThreadError::InvalidAllocationRequest);
+        }
+        return ptr::null_mut();
+    };
+    let Some(align) = usize::try_from(align).ok() else {
+        unsafe {
+            mark_current_thread_errored(ThreadError::InvalidAllocationRequest);
+        }
+        return ptr::null_mut();
+    };
+
+    unsafe {
+        let thread = CURRENT_THREAD;
+        if thread.is_null() {
+            return host_alloc(size, align);
+        }
+
+        match (*thread).heap.alloc(size, align) {
+            Ok(ptr) => ptr,
+            Err(error) => {
+                (*thread).mark_errored(error);
+                yield_to_scheduler(thread);
+                ptr::null_mut()
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn __tally_dealloc(ptr: *mut c_void, size: u64, align: u64) {
+    let Some(size) = usize::try_from(size).ok() else {
+        unsafe {
+            mark_current_thread_errored(ThreadError::InvalidAllocationRequest);
+        }
+        return;
+    };
+    let Some(align) = usize::try_from(align).ok() else {
+        unsafe {
+            mark_current_thread_errored(ThreadError::InvalidAllocationRequest);
+        }
+        return;
+    };
+
+    unsafe {
+        let thread = CURRENT_THREAD;
+        if thread.is_null() {
+            host_dealloc(ptr, size, align);
+        } else {
+            (*thread).heap.dealloc(ptr, size, align);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn __tally_realloc(
+    ptr: *mut c_void,
+    old_size: u64,
+    align: u64,
+    new_size: u64,
+) -> *mut c_void {
+    let Some(old_size) = usize::try_from(old_size).ok() else {
+        unsafe {
+            mark_current_thread_errored(ThreadError::InvalidAllocationRequest);
+        }
+        return ptr::null_mut();
+    };
+    let Some(align) = usize::try_from(align).ok() else {
+        unsafe {
+            mark_current_thread_errored(ThreadError::InvalidAllocationRequest);
+        }
+        return ptr::null_mut();
+    };
+    let Some(new_size) = usize::try_from(new_size).ok() else {
+        unsafe {
+            mark_current_thread_errored(ThreadError::InvalidAllocationRequest);
+        }
+        return ptr::null_mut();
+    };
+
+    unsafe {
+        let thread = CURRENT_THREAD;
+        if thread.is_null() {
+            return host_realloc(ptr, old_size, align, new_size);
+        }
+
+        match (*thread).heap.realloc(ptr, old_size, align, new_size) {
+            Ok(ptr) => ptr,
+            Err(error) => {
+                (*thread).mark_errored(error);
+                yield_to_scheduler(thread);
+                ptr::null_mut()
+            }
+        }
+    }
+}
+
+unsafe fn host_alloc(size: usize, align: usize) -> *mut c_void {
+    let Ok(layout) = std::alloc::Layout::from_size_align(size, align) else {
+        return ptr::null_mut();
+    };
+    if layout.size() == 0 {
+        return ptr::null_mut();
+    }
+    std::alloc::alloc(layout) as *mut c_void
+}
+
+unsafe fn host_dealloc(ptr: *mut c_void, size: usize, align: usize) {
+    if ptr.is_null() {
+        return;
+    }
+    let Ok(layout) = std::alloc::Layout::from_size_align(size, align) else {
+        return;
+    };
+    if layout.size() != 0 {
+        std::alloc::dealloc(ptr as *mut u8, layout);
+    }
+}
+
+unsafe fn host_realloc(
+    ptr: *mut c_void,
+    old_size: usize,
+    align: usize,
+    new_size: usize,
+) -> *mut c_void {
+    if ptr.is_null() {
+        return host_alloc(new_size, align);
+    }
+    let Ok(layout) = std::alloc::Layout::from_size_align(old_size, align) else {
+        return ptr::null_mut();
+    };
+    if layout.size() == 0 {
+        return host_alloc(new_size, align);
+    }
+    std::alloc::realloc(ptr as *mut u8, layout, new_size) as *mut c_void
 }
 
 pub fn record_current_thread_work(units: u64) {
@@ -1100,6 +1774,69 @@ mod tests {
         *counter += 1;
     }
 
+    #[repr(C)]
+    struct HeapProbeArgs {
+        writes: u64,
+        observed_null: u64,
+    }
+
+    unsafe extern "C" fn heap_allocates_and_frees(arg: *mut c_void) {
+        let args = &mut *(arg as *mut HeapProbeArgs);
+        let ptr = __tally_alloc(256, 16) as *mut u8;
+        if ptr.is_null() {
+            args.observed_null = 1;
+            return;
+        }
+
+        for offset in 0..256 {
+            ptr::write_volatile(ptr.add(offset), offset as u8);
+        }
+        args.writes = 256;
+        __tally_dealloc(ptr as *mut c_void, 256, 16);
+        __tally_charge(1);
+    }
+
+    unsafe extern "C" fn heap_exhausts(arg: *mut c_void) {
+        let args = &mut *(arg as *mut HeapProbeArgs);
+        let ptr = __tally_alloc(8192, 16);
+        if ptr.is_null() {
+            args.observed_null = 1;
+        }
+        args.writes = 1;
+        __tally_charge(1);
+    }
+
+    #[repr(C)]
+    struct StackProbeArgs {
+        calls: u64,
+        marker: u8,
+    }
+
+    unsafe extern "C" fn recursive_stack_probe(arg: *mut c_void) {
+        recursive_stack_probe_inner(arg as *mut StackProbeArgs);
+    }
+
+    #[allow(unconditional_recursion)]
+    #[inline(never)]
+    unsafe fn recursive_stack_probe_inner(args: *mut StackProbeArgs) {
+        let mut local = [0_u8; 2048];
+        ptr::write_volatile(local.as_mut_ptr(), (*args).marker);
+        (*args).calls = (*args).calls.saturating_add(1);
+        __tally_charge(1);
+        recursive_stack_probe_inner(args);
+        ptr::read_volatile(local.as_ptr());
+    }
+
+    unsafe extern "C" fn large_stack_frame_probe(arg: *mut c_void) {
+        let args = &mut *(arg as *mut StackProbeArgs);
+        let mut local = [0_u8; 96 * 1024];
+        for offset in (0..local.len()).step_by(4096) {
+            ptr::write_volatile(local.as_mut_ptr().add(offset), args.marker);
+        }
+        args.calls = args.calls.saturating_add(1);
+        __tally_charge(1);
+    }
+
     #[test]
     fn budget_debt_carries_between_cycles() {
         let mut manager = TallyManager::new();
@@ -1154,6 +1891,153 @@ mod tests {
             65536,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn per_thread_heap_tracks_allocations_and_deallocations() {
+        let mut manager = TallyManager::new();
+        let mut args = HeapProbeArgs {
+            writes: 0,
+            observed_null: 0,
+        };
+        let id = manager
+            .spawn_with_limits(
+                heap_allocates_and_frees,
+                &mut args as *mut HeapProbeArgs as *mut c_void,
+                10,
+                MemoryLimits::new(65_536, 1024),
+            )
+            .unwrap();
+
+        assert_eq!(manager.run_cycle(id).unwrap(), ThreadState::Returned);
+        assert_eq!(args.writes, 256);
+        assert_eq!(args.observed_null, 0);
+
+        let memory = manager.memory_stats_for_thread(id).unwrap();
+        assert_eq!(memory.heap_limit_bytes, 4096);
+        assert_eq!(memory.heap_live_bytes, 0);
+        assert_eq!(memory.heap_peak_live_bytes, 256);
+        assert_eq!(memory.allocations, 1);
+        assert_eq!(memory.deallocations, 1);
+        assert_eq!(memory.allocation_failures, 0);
+        assert_eq!(memory.error, None);
+    }
+
+    #[test]
+    fn heap_exhaustion_errors_one_thread_and_scheduler_continues() {
+        let mut manager = TallyManager::new();
+        let mut heap_args = HeapProbeArgs {
+            writes: 0,
+            observed_null: 0,
+        };
+        let failing = manager
+            .spawn_with_limits(
+                heap_exhausts,
+                &mut heap_args as *mut HeapProbeArgs as *mut c_void,
+                10,
+                MemoryLimits::new(65_536, 128),
+            )
+            .unwrap();
+
+        let mut counter = 0_u64;
+        let healthy = manager
+            .spawn_with_stack(
+                returns_immediately,
+                &mut counter as *mut u64 as *mut c_void,
+                10,
+                65_536,
+            )
+            .unwrap();
+
+        assert_eq!(manager.run_cycle(failing).unwrap(), ThreadState::Errored);
+        let failing_stats = manager.stats_for_thread(failing).unwrap();
+        assert_eq!(failing_stats.error, Some(ThreadError::HeapLimit));
+        let failing_memory = manager.memory_stats_for_thread(failing).unwrap();
+        assert_eq!(failing_memory.allocation_failures, 1);
+        assert_eq!(failing_memory.error, Some(ThreadError::HeapLimit));
+
+        assert_eq!(manager.run_cycle(healthy).unwrap(), ThreadState::Returned);
+        assert_eq!(counter, 1);
+        assert_eq!(manager.run_cycle(failing).unwrap(), ThreadState::Errored);
+    }
+
+    #[test]
+    fn deep_recursion_stack_overflow_is_scheduler_recoverable() {
+        let mut manager = TallyManager::new();
+        let mut args = StackProbeArgs {
+            calls: 0,
+            marker: 0x5a,
+        };
+        let failing = manager
+            .spawn_with_limits(
+                recursive_stack_probe,
+                &mut args as *mut StackProbeArgs as *mut c_void,
+                1_000_000,
+                MemoryLimits::stack_only(32 * 1024),
+            )
+            .unwrap();
+
+        let mut counter = 0_u64;
+        let healthy = manager
+            .spawn_with_stack(
+                returns_immediately,
+                &mut counter as *mut u64 as *mut c_void,
+                10,
+                65_536,
+            )
+            .unwrap();
+
+        assert_eq!(manager.run_cycle(failing).unwrap(), ThreadState::Errored);
+        assert!(args.calls > 0);
+        let failing_stats = manager.stats_for_thread(failing).unwrap();
+        assert_eq!(failing_stats.error, Some(ThreadError::StackSoftLimit));
+        let memory = manager.memory_stats_for_thread(failing).unwrap();
+        assert!(memory.stack_overflowed);
+        assert_eq!(memory.error, Some(ThreadError::StackSoftLimit));
+
+        assert_eq!(manager.run_cycle(healthy).unwrap(), ThreadState::Returned);
+        assert_eq!(counter, 1);
+    }
+
+    #[test]
+    fn excessive_stack_frame_is_scheduler_recoverable() {
+        let mut manager = TallyManager::new();
+        let mut args = StackProbeArgs {
+            calls: 0,
+            marker: 0xa5,
+        };
+        let failing = manager
+            .spawn_with_limits(
+                large_stack_frame_probe,
+                &mut args as *mut StackProbeArgs as *mut c_void,
+                1_000_000,
+                MemoryLimits::stack_only(32 * 1024),
+            )
+            .unwrap();
+
+        let mut counter = 0_u64;
+        let healthy = manager
+            .spawn_with_stack(
+                returns_immediately,
+                &mut counter as *mut u64 as *mut c_void,
+                10,
+                65_536,
+            )
+            .unwrap();
+
+        assert_eq!(manager.run_cycle(failing).unwrap(), ThreadState::Errored);
+        let error = manager.stats_for_thread(failing).unwrap().error;
+        assert!(matches!(
+            error,
+            Some(ThreadError::StackGuardFault) | Some(ThreadError::StackSoftLimit)
+        ));
+
+        let memory = manager.memory_stats_for_thread(failing).unwrap();
+        assert!(memory.stack_overflowed);
+        assert_eq!(memory.error, error);
+
+        assert_eq!(manager.run_cycle(healthy).unwrap(), ThreadState::Returned);
+        assert_eq!(counter, 1);
     }
 
     #[test]
